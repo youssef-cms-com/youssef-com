@@ -10,6 +10,12 @@ from app import *
 
 HOST=os.getenv('HOST','0.0.0.0'); PORT=int(os.getenv('PORT','5000'))
 ADMIN_EMAIL=os.getenv('ADMIN_EMAIL','admin@youssef.com').lower(); ADMIN_PASSWORD=os.getenv('ADMIN_PASSWORD',''); SESS={}
+CSS_FILE=BASE/'static'/'app.css'
+try:
+    APP_CSS=CSS_FILE.read_text(encoding='utf-8')
+except Exception:
+    APP_CSS='body{font-family:Segoe UI,Arial,sans-serif;margin:0;background:#f4f7fb;color:#17304f}'
+
 def hp(p,s=None):
  s=s or secrets.token_hex(16);return s+'$'+hashlib.pbkdf2_hmac('sha256',p.encode(),s.encode(),200000).hex()
 def vp(p,h):
@@ -31,7 +37,7 @@ def logo(size='normal'):
 def nav(pid=None):
     if not pid:return ''
     links=[('Dashboard',f'/dashboard/{pid}','⌂'),('Months',f'/periods/{pid}','▦'),('Media Buyers',f'/buyers/{pid}','◎'),('Import Center',f'/imports/{pid}','⇧'),('USDT & Adjustments',f'/adjustments/{pid}','₮'),('Products',f'/products/{pid}','◇'),('Commission History',f'/commission-rules/{pid}','◷'),('African Upsells',f'/african-upsells/{pid}','✓'),('City Mapping',f'/cities/{pid}','⌖'),('Review Center',f'/review/{pid}','!'),('Rates & Rules',f'/settings/{pid}','⚙'),('Export Excel',f'/export/{pid}','↓')]
-    return f'''<aside class="sidebar">{logo()}<nav>{''.join(f'<a href="{u}"><span>{i}</span>{t}</a>' for t,u,i in links)}<div class="nav-sep"></div><a href="/new"><span>＋</span>New Month</a><a href="/logout"><span>↗</span>Logout</a></nav><div class="sidebar-foot"><b>Private workspace</b><span>YOUSSEF.COM v9 Online</span></div></aside>'''
+    return f'''<aside class="sidebar">{logo()}<nav>{''.join(f'<a href="{u}"><span>{i}</span>{t}</a>' for t,u,i in links)}<div class="nav-sep"></div><a href="/new"><span>＋</span>New Month</a><a href="/logout"><span>↗</span>Logout</a></nav><div class="sidebar-foot"><b>Private workspace</b><span>YOUSSEF.COM v9.1 Online</span></div></aside>'''
 
 def page(title,body,p=None):
     pid=p['id'] if p else None
@@ -40,7 +46,7 @@ def page(title,body,p=None):
         opts=''.join(f'<option value="{x["id"]}" {"selected" if x["id"]==pid else ""}>{esc(x["label"])}</option>' for x in period_list())
         selector=f'''<label class="period-switch"><small>Period</small><select onchange="location.href='/dashboard/'+this.value">{opts}</select></label>'''
     topbar=f'''<header class="appbar"><div><span class="eyebrow">Commission & performance hub</span><strong>{esc(p['label']) if p else 'YOUSSEF.COM'}</strong></div><div class="appbar-actions">{selector}<span class="live-dot">● Live calculations</span><span class="admin-chip">AY</span></div></header>''' if pid else ''
-    return f'''<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{esc(title)} · YOUSSEF.COM</title><link rel="stylesheet" href="/static/app.css"></head><body><div class="shell">{nav(pid)}<div class="workspace">{topbar}<main class="content">{body}</main></div></div></body></html>'''.encode()
+    return f'''<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#102e57"><title>{esc(title)} · YOUSSEF.COM</title><style>{APP_CSS}</style><link rel="stylesheet" href="/static/app.css?v=9.1"></head><body><div class="shell">{nav(pid)}<div class="workspace">{topbar}<main class="content">{body}</main></div></div></body></html>'''.encode()
 
 def bar_chart(items,value_key,label_key='market',currency=False):
     vals=[max(0,float(x.get(value_key,0) or 0)) for x in items]; mx=max(vals+[1])
@@ -200,7 +206,7 @@ def periods_page(pid):
 
 
 def login(error=''):
-    return f'''<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>YOUSSEF.COM</title><link rel="stylesheet" href="/static/app.css"></head><body><div class="loginwrap"><div class="login-visual">{logo()}<div><span class="eyebrow light">Private commission intelligence</span><h1>Turn monthly exports into clear, auditable payouts.</h1><p>Performance, spend, upsells, bonuses and final commission — in one workspace.</p></div></div><div class="login"><div class="mobile-logo">{logo('compact')}</div><span class="eyebrow">Secure access</span><h1>Welcome back</h1><p class="muted">Sign in to YOUSSEF.COM.</p>{f'<div class="notice">{esc(error)}</div>' if error else ''}<form method="post"><div class="field"><label>Email</label><input name="email" value="admin@youssef.com"></div><div class="field"><label>Password</label><input name="password" type="password"></div><button class="btn" style="width:100%">Sign in</button></form></div></div></body></html>'''.encode()
+    return f'''<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#102e57"><title>YOUSSEF.COM</title><style>{APP_CSS}</style><link rel="stylesheet" href="/static/app.css?v=9.1"></head><body><div class="loginwrap"><div class="login-visual">{logo()}<div><span class="eyebrow light">Private commission intelligence</span><h1>Turn monthly exports into clear, auditable payouts.</h1><p>Performance, spend, upsells, bonuses and final commission — in one workspace.</p></div></div><div class="login"><div class="mobile-logo">{logo('compact')}</div><span class="eyebrow">Secure access</span><h1>Welcome back</h1><p class="muted">Sign in to YOUSSEF.COM.</p>{f'<div class="notice">{esc(error)}</div>' if error else ''}<form method="post" autocomplete="on"><div class="field"><label>Email</label><input name="email" type="email" autocomplete="username" value="{esc(ADMIN_EMAIL)}"></div><div class="field"><label>Password</label><input name="password" type="password" autocomplete="current-password"></div><button class="btn" style="width:100%">Sign in</button></form></div></div></body></html>'''.encode()
 
 class H(BaseHTTPRequestHandler):
     def out(self,data,status=200,ctype='text/html; charset=utf-8',headers=None):
@@ -215,8 +221,14 @@ class H(BaseHTTPRequestHandler):
     def do_GET(self):
         u=urlparse(self.path);path=u.path;query=parse_qs(u.query)
         if path.startswith('/static/'):
-            f=BASE/path.lstrip('/'); ctype='image/svg+xml' if f.suffix=='.svg' else 'text/css'
-            return self.out(f.read_bytes(),200,ctype) if f.exists() else self.out(b'',404)
+            f=(BASE/path.lstrip('/')).resolve()
+            static_root=(BASE/'static').resolve()
+            if static_root not in f.parents and f != static_root:
+                return self.out(b'Not found',404,'text/plain')
+            if not f.exists() or not f.is_file():
+                return self.out(b'Not found',404,'text/plain')
+            ctype={'css':'text/css; charset=utf-8','svg':'image/svg+xml','png':'image/png','jpg':'image/jpeg','jpeg':'image/jpeg','webp':'image/webp'}.get(f.suffix.lower().lstrip('.'),'application/octet-stream')
+            return self.out(f.read_bytes(),200,ctype,{'Cache-Control':'public, max-age=300'})
         if path=='/login':return self.out(login())
         if path=='/logout':return self.redirect('/login',{'Set-Cookie':'sid=; Max-Age=0; Path=/'})
         if not self.authed():return self.redirect('/login')
@@ -305,4 +317,4 @@ class H(BaseHTTPRequestHandler):
         self.out(b'Not found',404,'text/plain')
 
 if __name__=='__main__':
-    init_db();ensure_admin();print(f'YOUSSEF.COM v9 Online running at http://{HOST}:{PORT}');ThreadingHTTPServer((HOST,PORT),H).serve_forever()
+    init_db();ensure_admin();print(f'YOUSSEF.COM v9.1 Online running at http://{HOST}:{PORT}');ThreadingHTTPServer((HOST,PORT),H).serve_forever()
