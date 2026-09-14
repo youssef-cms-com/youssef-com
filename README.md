@@ -1,23 +1,33 @@
-# YOUSSEF.COM v9.2 Online Edition
-Cloud-ready evolution of v8. Preserves periods, cumulative negative-credit logic, team-leave status, dated commissions, persistent city mappings, African upsell approval, Morocco upsells, imports, analytics and Excel export.
+# YOUSSEF.COM v9.3 Online
 
-## Online additions
-- Binds to `0.0.0.0` and Railway `PORT`.
-- Persistent data path controlled by `DATA_DIR` / `DB_PATH`.
-- Passwords stored with PBKDF2 hashes rather than plaintext.
-- Roles: ADMIN, MANAGER, MEDIA_BUYER_VIEWER.
-- Viewer role is read-only; accounts can be linked to a media buyer.
-- Dockerfile + railway.toml included.
-- `manage_users.py` creates/updates accounts.
-- See `DEPLOY_RAILWAY.md` for deployment.
+Private commission and media-buyer performance platform prepared for Railway.
 
-Important: mount Railway persistent storage at `/data`. Without a persistent volume, SQLite data can disappear on redeploy.
+## v9.3 changes
+- Admin-only **Users & Roles** web page.
+- Roles: **Admin**, **Manager**, **Media Buyer Viewer**.
+- Viewer accounts are linked to one media buyer and are restricted server-side to that buyer's own read-only pages.
+- Managers retain operational access but cannot administer users/security.
+- User disable/reactivate and password reset controls.
+- Role and linked-buyer changes apply to active sessions automatically.
+- Sidebar/background remains navy while the main page scrolls.
+- Existing v9.2 self-contained CSS remains embedded directly in `server.py` for Railway reliability.
 
-## v9.2 Railway UI fix
-This build embeds the application stylesheet directly into every HTML page and also keeps `/static/app.css` as a fallback. This avoids Railway/proxy/static-asset issues that could cause the login page to appear as raw HTML or an oversized SVG/logo.
+## Railway persistent storage
+Set:
 
-If v9 is already deployed on Railway, only the application code needs to be updated in GitHub. Keep the existing Railway volume and environment variables unchanged.
+`DATA_DIR=/data`
 
+and attach a Railway persistent volume at `/data`.
 
-## v9.2 Railway UI hardening
-The complete application stylesheet is embedded directly in `server.py`. The online UI no longer depends on `/static/app.css` being present in the Railway runtime. The static file remains only as an optional local fallback/reference.
+Production database path:
+
+`/data/youssef.db`
+
+## Required environment variables
+- `DATA_DIR=/data`
+- `ADMIN_EMAIL=...`
+- `ADMIN_PASSWORD=...`
+- `SECRET_KEY=...`
+
+## Production note
+Do not commit production `youssef.db` to GitHub. Database files are ignored by `.gitignore` and `.dockerignore`; Railway production data should live only on the persistent `/data` volume (plus your backups).

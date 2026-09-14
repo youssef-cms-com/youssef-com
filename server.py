@@ -1,5 +1,6 @@
 from __future__ import annotations
 import os,secrets,math,hashlib,hmac
+from contextvars import ContextVar
 from email.parser import BytesParser
 from email.policy import default
 from http.server import ThreadingHTTPServer,BaseHTTPRequestHandler
@@ -10,6 +11,7 @@ from app import *
 
 HOST=os.getenv('HOST','0.0.0.0'); PORT=int(os.getenv('PORT','5000'))
 ADMIN_EMAIL=os.getenv('ADMIN_EMAIL','admin@youssef.com').lower(); ADMIN_PASSWORD=os.getenv('ADMIN_PASSWORD',''); SESS={}
+REQUEST_USER=ContextVar('request_user',default=None)
 APP_CSS = r''':root{--nav:#102e57;--nav2:#0b2447;--blue:#4c8ffb;--blue-soft:#edf5ff;--green:#2eb98f;--green-soft:#eaf9f4;--teal:#37aab8;--teal-soft:#eaf8fa;--violet:#8a76e8;--violet-soft:#f1effd;--amber:#e9a23b;--amber-soft:#fff7e8;--coral:#e77d71;--coral-soft:#fff0ee;--ink:#17304f;--muted:#6f8197;--bg:#f4f7fb;--card:#fff;--line:#e5ebf2;--shadow:0 12px 34px rgba(29,55,90,.07)}*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;font-family:Inter,Segoe UI,Arial,sans-serif;background:var(--bg);color:var(--ink)}a{color:inherit;text-decoration:none}.shell{display:grid;grid-template-columns:245px 1fr;min-height:100vh}.sidebar{background:linear-gradient(180deg,var(--nav),var(--nav2));color:#dbe8f7;padding:24px 18px;position:sticky;top:0;height:100vh;display:flex;flex-direction:column}.logo{display:flex;align-items:center;gap:10px;margin:0 8px 30px;color:#fff}.logo-mark{width:38px;height:38px;border-radius:12px;background:linear-gradient(135deg,#82a8ff,#72e2c5);display:grid;place-items:center;box-shadow:0 8px 20px rgba(47,126,220,.28)}.logo-mark svg{width:27px;height:27px;fill:#fff}.logo-mark .logo-cut{fill:#15345c}.logo b{display:block;font-size:17px;letter-spacing:.3px}.logo small{display:block;font-size:10px;color:#9eb5cf;margin-top:2px}.sidebar nav a{display:flex;align-items:center;gap:11px;padding:11px 12px;border-radius:12px;margin:4px 0;color:#bed0e5;font-size:13px;font-weight:700}.sidebar nav a span{width:24px;text-align:center;color:#8fb3db;font-size:16px}.sidebar nav a:hover{background:rgba(255,255,255,.08);color:#fff}.nav-sep{height:1px;background:rgba(255,255,255,.1);margin:15px 8px}.sidebar-foot{margin-top:auto;padding:14px 12px;border:1px solid rgba(255,255,255,.09);border-radius:14px;background:rgba(255,255,255,.04)}.sidebar-foot b,.sidebar-foot span{display:block}.sidebar-foot b{font-size:12px}.sidebar-foot span{font-size:10px;color:#9db3ce;margin-top:3px}.workspace{min-width:0}.appbar{height:68px;background:rgba(255,255,255,.92);border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;padding:0 30px;position:sticky;top:0;z-index:5;backdrop-filter:blur(8px)}.appbar strong{display:block;font-size:15px}.eyebrow{display:block;font-size:10px;letter-spacing:.9px;text-transform:uppercase;color:#8494a7;font-weight:800;margin-bottom:5px}.eyebrow.light{color:#a5bfdd}.appbar-actions{display:flex;align-items:center;gap:14px}.live-dot{font-size:11px;font-weight:700;color:#2e9c7e;background:#eaf8f3;padding:7px 10px;border-radius:999px}.admin-chip{width:34px;height:34px;border-radius:50%;background:#153967;color:#fff;display:grid;place-items:center;font-weight:800;font-size:11px}.content{padding:28px 30px 60px;max-width:1660px;width:100%;margin:auto}.hero,.buyer-hero{display:flex;align-items:flex-start;justify-content:space-between;gap:24px;margin:4px 0 24px}.hero h1,.buyer-hero h1{font-size:30px;line-height:1.15;margin:0 0 8px;letter-spacing:-.5px}.hero p,.buyer-hero p{margin:0;color:var(--muted);font-size:13px}.hero-badge{min-width:125px;background:#fff;border:1px solid var(--line);border-radius:16px;padding:13px 16px;box-shadow:var(--shadow)}.hero-badge span,.hero-badge small{display:block;color:var(--muted);font-size:10px}.hero-badge strong{display:block;font-size:18px;margin:4px 0}.kpis{display:grid;gap:14px;margin:0 0 18px}.kpis.six{grid-template-columns:repeat(6,minmax(150px,1fr))}.kpi{background:#fff;border:1px solid var(--line);border-radius:17px;padding:17px;box-shadow:var(--shadow);position:relative;overflow:hidden}.kpi:before{content:"";position:absolute;left:0;top:0;bottom:0;width:4px;background:var(--blue)}.kpi.green:before{background:var(--green)}.kpi.violet:before{background:var(--violet)}.kpi.teal:before{background:var(--teal)}.kpi.amber:before{background:var(--amber)}.kpi.coral:before{background:var(--coral)}.kpi span{font-size:10px;text-transform:uppercase;letter-spacing:.55px;color:#7f8fa1;font-weight:800}.kpi strong{display:block;font-size:20px;margin:8px 0 4px;color:#19385f}.kpi small{font-size:10.5px;color:#8695a7}.kpi.featured{background:linear-gradient(145deg,#ecfaf6,#f9fffd);border-color:#cfeee5}.kpi.featured strong{color:#188266;font-size:22px}.panel{background:var(--card);border:1px solid var(--line);border-radius:18px;box-shadow:var(--shadow);padding:19px;margin:15px 0}.panel h2{font-size:16px;margin:0;color:#1d385a}.panel-head{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:16px}.panel-head .eyebrow{margin-bottom:4px}.analytics-grid{display:grid;grid-template-columns:1fr 1fr;gap:15px}.buyer-analytics{grid-template-columns:1.05fr 1.05fr .9fr .9fr}.grid2{display:grid;grid-template-columns:1fr 1fr;gap:15px}.grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:15px}.bar-chart{display:flex;flex-direction:column;gap:13px}.chart-row{display:grid;gap:6px}.chart-label{display:flex;justify-content:space-between;gap:12px;font-size:11px}.chart-label span{color:#536b86;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.chart-label b{color:#28496d;font-variant-numeric:tabular-nums}.chart-track{height:9px;background:#eef3f8;border-radius:99px;overflow:hidden}.chart-track i{display:block;height:100%;border-radius:99px;background:linear-gradient(90deg,#63a3ff,#75cfbd)}.donut-wrap{display:flex;align-items:center;justify-content:center;gap:25px;min-height:210px}.donut{width:138px;height:138px;border-radius:50%;display:grid;place-items:center;position:relative}.donut:after{content:"";position:absolute;width:90px;height:90px;border-radius:50%;background:#fff}.donut>div{position:relative;z-index:1;text-align:center}.donut small{display:block;color:var(--muted);font-size:9px}.donut strong{font-size:12px}.donut-legend{min-width:120px}.donut-legend div{display:grid;grid-template-columns:10px 1fr auto;gap:7px;align-items:center;font-size:10px;padding:6px 0}.donut-legend i{width:8px;height:8px;border-radius:50%}.donut-legend span{color:var(--muted)}.donut-legend b{font-variant-numeric:tabular-nums}.insight-panel{background:linear-gradient(145deg,#f8fbff,#f5fbfa)}.insights{margin:12px 0 0;padding-left:19px;color:#506982;font-size:11.5px;line-height:1.55}.insights li{margin:8px 0}.soft-stats{display:flex;gap:9px}.soft-stats span{font-size:10px;background:#f3f6fa;padding:7px 10px;border-radius:9px;color:var(--muted)}.soft-stats b{color:#345575}.table-wrap{overflow:auto}table{width:100%;border-collapse:collapse;font-size:12px}th{font-size:9.5px;text-transform:uppercase;letter-spacing:.5px;color:#8091a4;text-align:left;padding:10px 9px;border-bottom:1px solid var(--line);white-space:nowrap}td{padding:11px 9px;border-bottom:1px solid #edf1f5;vertical-align:middle}tbody tr:hover{background:#fafcfe}td small{display:block;font-size:9px;color:var(--muted);margin-top:3px}.num{text-align:right;font-variant-numeric:tabular-nums}.positive{color:#21866d!important}.negative{color:#c75d67!important}.empty{color:var(--muted);text-align:center;padding:30px}.buyer-link{display:flex;align-items:center;gap:9px}.buyer-link strong{font-size:11.5px}.avatar{width:31px;height:31px;border-radius:10px;background:linear-gradient(135deg,#dfeaff,#dff7f1);display:grid;place-items:center;color:#315b88;font-size:10px;font-weight:800;flex:0 0 auto}.avatar.lg{width:42px;height:42px;border-radius:13px;font-size:12px}.avatar.xl{width:56px;height:56px;border-radius:16px;font-size:15px}.pill{display:inline-flex;align-items:center;border-radius:999px;background:#eaf8f3;color:#27856d;padding:6px 9px;font-size:9px;font-weight:800;white-space:nowrap}.pill.former{background:#f1effb;color:#7564b7}.pill.warn{background:#fff4df;color:#996620}.pill.good{background:#eaf8f3;color:#27856d}.text-link{font-size:11px;color:#477ec0;font-weight:800}.buyer-title{display:flex;align-items:center;gap:13px}.buyer-title h1{margin-bottom:4px}.bridge{display:grid;grid-template-columns:repeat(6,1fr);gap:10px}.step{background:#f8fafc;border:1px solid var(--line);border-radius:13px;padding:13px}.step small{font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.4px}.step strong{display:block;font-size:16px;margin-top:5px}.step.good{background:#effaf6}.step.danger{background:#fff3f2}.step.final-step{background:linear-gradient(145deg,#eef7ff,#edf9f5);border-color:#cfe3ee}.compact-table td{padding:10px 8px}.buyer-grid{display:grid;grid-template-columns:repeat(4,minmax(220px,1fr));gap:14px}.buyer-card{display:block;background:#fff;border:1px solid var(--line);border-radius:17px;padding:16px;box-shadow:var(--shadow);transition:.2s transform,.2s box-shadow}.buyer-card:hover{transform:translateY(-2px);box-shadow:0 16px 34px rgba(29,55,90,.11)}.buyer-card-top{display:flex;justify-content:space-between}.buyer-card h3{margin:12px 0;font-size:14px}.buyer-metrics{display:grid;grid-template-columns:1fr 1fr;gap:8px}.buyer-metrics span{background:#f8fafc;border-radius:10px;padding:9px}.buyer-metrics small{display:block;color:var(--muted);font-size:9px}.buyer-metrics b{display:block;font-size:11px;margin-top:3px}.add-panel{display:grid;grid-template-columns:.8fr 2fr;align-items:center;gap:20px;background:linear-gradient(145deg,#fff,#f8fbff)}.add-panel p{font-size:11px;margin:5px 0 0}.inline-form{display:grid;grid-template-columns:1.2fr .7fr 1.2fr auto;gap:9px}.product-form{display:grid;grid-template-columns:1.4fr .8fr .8fr .8fr .9fr auto;gap:9px}.field{margin:0 0 13px}.field label{display:block;font-size:10px;color:var(--muted);font-weight:800;margin-bottom:6px}.field input,.field select,input,select{width:100%;padding:10px 11px;border:1px solid #dbe4ed;border-radius:10px;background:#fff;color:var(--ink);outline:none;font:inherit;font-size:11px}.field input:focus,.field select:focus,input:focus,select:focus{border-color:#9ec2ef;box-shadow:0 0 0 3px #edf5ff}.formrow{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}.formrow.two{grid-template-columns:1fr 1fr}.form-actions{margin-top:14px}.btn{display:inline-flex;align-items:center;justify-content:center;border:none;border-radius:10px;background:linear-gradient(135deg,#4f8df2,#5d9cf9);color:#fff;padding:10px 14px;font-weight:800;font-size:11px;cursor:pointer;box-shadow:0 7px 16px rgba(70,130,220,.18)}.muted{color:var(--muted)}.notice{padding:11px;border-radius:10px;background:#fff4df;color:#8d651f;margin:12px 0;font-size:11px}.rule-card p,.info-card p{color:#5f7389;font-size:12px;line-height:1.6}.narrow{max-width:640px}.loginwrap{min-height:100vh;display:grid;grid-template-columns:1.1fr .9fr;background:#f5f8fc}.login-visual{padding:48px 56px;background:linear-gradient(160deg,#123968,#0d274c);color:#fff;display:flex;flex-direction:column;justify-content:space-between;position:relative;overflow:hidden}.login-visual:after{content:"";position:absolute;width:480px;height:480px;border-radius:50%;background:radial-gradient(circle,rgba(102,174,255,.28),rgba(35,91,151,0));right:-120px;bottom:-130px}.login-visual .logo{margin:0;position:relative;z-index:1}.login-visual>div:last-child{max-width:610px;position:relative;z-index:1}.login-visual h1{font-size:40px;line-height:1.1;margin:8px 0 16px;letter-spacing:-1px}.login-visual p{color:#b8c9dc;line-height:1.55}.login{align-self:center;justify-self:center;width:min(420px,84%);background:#fff;border:1px solid var(--line);border-radius:22px;padding:32px;box-shadow:var(--shadow)}.login h1{font-size:28px;margin:4px 0}.mobile-logo{display:none}.login .btn{margin-top:4px}.login .field{margin-top:14px}@media(max-width:1350px){.kpis.six{grid-template-columns:repeat(3,1fr)}.buyer-analytics{grid-template-columns:1fr 1fr}.buyer-grid{grid-template-columns:repeat(3,1fr)}.product-form{grid-template-columns:1fr 1fr 1fr}.product-form .btn{grid-column:span 3}}@media(max-width:1050px){.shell{grid-template-columns:1fr}.sidebar{position:static;height:auto}.sidebar nav{display:flex;flex-wrap:wrap}.sidebar-foot{display:none}.workspace{min-width:0}.kpis.six{grid-template-columns:repeat(2,1fr)}.analytics-grid,.grid2,.grid3,.buyer-analytics{grid-template-columns:1fr}.buyer-grid{grid-template-columns:repeat(2,1fr)}.bridge{grid-template-columns:repeat(3,1fr)}.add-panel{grid-template-columns:1fr}.inline-form{grid-template-columns:1fr 1fr}.loginwrap{grid-template-columns:1fr}.login-visual{display:none}.mobile-logo{display:block}.mobile-logo .logo{color:var(--ink);margin:0 0 20px}.mobile-logo .logo small{color:var(--muted)}}@media(max-width:680px){.content{padding:20px 15px 40px}.appbar{padding:0 15px}.kpis.six,.buyer-grid{grid-template-columns:1fr}.bridge{grid-template-columns:1fr 1fr}.inline-form,.product-form,.formrow,.formrow.two{grid-template-columns:1fr}.product-form .btn{grid-column:auto}.hero,.buyer-hero{flex-direction:column}.donut-wrap{flex-direction:column}.soft-stats{display:none}}
 
 /* v5 effective-date commission history */
@@ -31,6 +33,14 @@ APP_CSS = r''':root{--nav:#102e57;--nav2:#0b2447;--blue:#4c8ffb;--blue-soft:#edf
 /* v8 period history, carry-forward credit and team status */
 .period-switch{display:flex;align-items:center;gap:8px;background:#f6f9fc;border:1px solid var(--line);padding:5px 7px 5px 10px;border-radius:12px}.period-switch small{font-size:9px;color:var(--muted);font-weight:800;text-transform:uppercase;letter-spacing:.4px}.period-switch select{width:auto;min-width:104px;padding:6px 28px 6px 8px;border:0;background:#fff;font-size:11px;font-weight:800}.risk-alert{display:flex;align-items:center;justify-content:space-between;gap:16px;margin:0 0 14px;padding:14px 16px;border:1px solid #ffd2d0;border-radius:14px;background:linear-gradient(145deg,#fff5f4,#fffafa);color:#a84848}.risk-alert b,.risk-alert span{display:block}.risk-alert b{font-size:12px}.risk-alert span{font-size:10.5px;margin-top:4px;color:#9a5b5b}.risk-alert strong{font-size:13px}.risk-alert.critical{border-color:#ffb7b3;background:#fff0ef}.pill.risk{background:#fff0ef;color:#b34d4d}.btn.danger{background:linear-gradient(135deg,#df6a6a,#c75555)}.buyer-card{padding:0;overflow:hidden}.buyer-card-main{display:block;padding:16px}.leave-form{padding:10px 16px 14px;border-top:1px solid var(--line);display:flex;gap:8px;align-items:center;background:#fbfcfe}.leave-form input{flex:1;min-width:0;padding:8px 9px}.buyer-card:hover .buyer-card-main{background:#fcfdff}.period-history-note{font-size:11px;color:var(--muted)}
 @media(max-width:680px){.period-switch small{display:none}.period-switch select{min-width:92px}.live-dot{display:none}.leave-form{flex-direction:column;align-items:stretch}}
+/* v9.3 sidebar + user administration */
+.shell{background:linear-gradient(90deg,var(--nav2) 0 245px,var(--bg) 245px)}
+.sidebar{overflow-y:auto;scrollbar-width:thin;scrollbar-color:rgba(255,255,255,.18) transparent}
+.sidebar::-webkit-scrollbar{width:5px}.sidebar::-webkit-scrollbar-thumb{background:rgba(255,255,255,.18);border-radius:99px}
+.role-chip{display:inline-flex;align-items:center;padding:5px 8px;border-radius:999px;font-size:9px;font-weight:800;letter-spacing:.35px;background:#eef4fb;color:#315b88}.role-chip.admin{background:#edf3ff;color:#3e69a8}.role-chip.manager{background:#eaf9f4;color:#237b65}.role-chip.viewer{background:#f1effd;color:#6d5eb2}
+.user-card-grid{display:grid;grid-template-columns:repeat(3,minmax(250px,1fr));gap:14px}.user-card{background:#fff;border:1px solid var(--line);border-radius:16px;padding:16px;box-shadow:var(--shadow)}.user-card-head{display:flex;align-items:center;justify-content:space-between;gap:10px}.user-card h3{font-size:14px;margin:12px 0 5px}.user-card p{font-size:10.5px;color:var(--muted);margin:0 0 12px}.user-meta{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:12px 0}.user-meta span{background:#f8fafc;border-radius:10px;padding:9px}.user-meta small{display:block;color:var(--muted);font-size:8.5px;text-transform:uppercase;letter-spacing:.35px}.user-meta b{display:block;font-size:10.5px;margin-top:3px}.user-actions{display:grid;grid-template-columns:1fr auto;gap:8px;margin-top:10px}.user-actions .btn{padding:9px 10px}.btn.secondary{background:#edf3fa;color:#365d86;box-shadow:none}.btn.ghost-danger{background:#fff0ef;color:#ad5353;box-shadow:none}.permission-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}.permission-card{border:1px solid var(--line);border-radius:14px;padding:14px;background:#fbfdff}.permission-card h3{margin:0 0 6px;font-size:13px}.permission-card p{margin:0;color:var(--muted);font-size:10.5px;line-height:1.55}.viewer-banner{padding:10px 14px;border-radius:12px;background:#f1effd;color:#6b5aab;font-size:10.5px;font-weight:700}
+@media(max-width:1050px){.shell{background:var(--bg)}}
+@media(max-width:900px){.user-card-grid,.permission-grid{grid-template-columns:1fr}.user-actions{grid-template-columns:1fr}}
 '''
 
 def hp(p,s=None):
@@ -43,6 +53,16 @@ def ensure_admin():
  if not u and ADMIN_PASSWORD:c.execute('insert into users(email,name,password_hash,role,status,created_at) values(?,?,?,?,?,?)',(ADMIN_EMAIL,'Youssef Admin',hp(ADMIN_PASSWORD),'ADMIN','ACTIVE',datetime.now().isoformat()));c.commit()
  c.close()
 
+def request_user(): return REQUEST_USER.get() or {}
+def user_role(): return request_user().get('role','')
+def is_admin(): return user_role()=='ADMIN'
+def is_manager(): return user_role()=='MANAGER'
+def is_viewer(): return user_role()=='MEDIA_BUYER_VIEWER'
+def can_operate(): return user_role() in ('ADMIN','MANAGER')
+
+def role_label(role):
+    return {'ADMIN':'Admin','MANAGER':'Manager','MEDIA_BUYER_VIEWER':'Media Buyer Viewer'}.get(role,role or 'Unknown')
+
 def money(x): return f'{float(x or 0):,.2f}'
 def period(pid):
     c=db();r=c.execute('select * from periods where id=?',(pid,)).fetchone();c.close();return dict(r) if r else None
@@ -53,16 +73,30 @@ def logo(size='normal'):
 
 def nav(pid=None):
     if not pid:return ''
-    links=[('Dashboard',f'/dashboard/{pid}','⌂'),('Months',f'/periods/{pid}','▦'),('Media Buyers',f'/buyers/{pid}','◎'),('Import Center',f'/imports/{pid}','⇧'),('USDT & Adjustments',f'/adjustments/{pid}','₮'),('Products',f'/products/{pid}','◇'),('Commission History',f'/commission-rules/{pid}','◷'),('African Upsells',f'/african-upsells/{pid}','✓'),('City Mapping',f'/cities/{pid}','⌖'),('Review Center',f'/review/{pid}','!'),('Rates & Rules',f'/settings/{pid}','⚙'),('Export Excel',f'/export/{pid}','↓')]
-    return f'''<aside class="sidebar">{logo()}<nav>{''.join(f'<a href="{u}"><span>{i}</span>{t}</a>' for t,u,i in links)}<div class="nav-sep"></div><a href="/new"><span>＋</span>New Month</a><a href="/logout"><span>↗</span>Logout</a></nav><div class="sidebar-foot"><b>Private workspace</b><span>YOUSSEF.COM v9.2 Online</span></div></aside>'''
+    u=request_user();role=u.get('role')
+    if role=='MEDIA_BUYER_VIEWER':
+        bid=u.get('buyer_id')
+        links=[('My Dashboard',f'/buyer/{pid}/{bid}','◎'),('Months',f'/my-periods/{pid}','▦')]
+        extras=''
+    else:
+        links=[('Dashboard',f'/dashboard/{pid}','⌂'),('Months',f'/periods/{pid}','▦'),('Media Buyers',f'/buyers/{pid}','◎'),('Import Center',f'/imports/{pid}','⇧'),('USDT & Adjustments',f'/adjustments/{pid}','₮'),('Products',f'/products/{pid}','◇'),('Commission History',f'/commission-rules/{pid}','◷'),('African Upsells',f'/african-upsells/{pid}','✓'),('City Mapping',f'/cities/{pid}','⌖'),('Review Center',f'/review/{pid}','!'),('Rates & Rules',f'/settings/{pid}','⚙'),('Export Excel',f'/export/{pid}','↓')]
+        if role=='ADMIN': links.append(('Users & Roles',f'/users/{pid}','♙'))
+        extras='<div class="nav-sep"></div><a href="/new"><span>＋</span>New Month</a>'
+    return f'''<aside class="sidebar">{logo()}<nav>{''.join(f'<a href="{url}"><span>{icon}</span>{title}</a>' for title,url,icon in links)}{extras}<a href="/logout"><span>↗</span>Logout</a></nav><div class="sidebar-foot"><b>{esc(u.get('name') or 'Private workspace')}</b><span>{esc(role_label(role))} · YOUSSEF.COM v9.3</span></div></aside>'''
 
 def page(title,body,p=None):
-    pid=p['id'] if p else None
+    pid=p['id'] if p else None;u=request_user();role=u.get('role','')
     selector=''
     if pid:
-        opts=''.join(f'<option value="{x["id"]}" {"selected" if x["id"]==pid else ""}>{esc(x["label"])}</option>' for x in period_list())
-        selector=f'''<label class="period-switch"><small>Period</small><select onchange="location.href='/dashboard/'+this.value">{opts}</select></label>'''
-    topbar=f'''<header class="appbar"><div><span class="eyebrow">Commission & performance hub</span><strong>{esc(p['label']) if p else 'YOUSSEF.COM'}</strong></div><div class="appbar-actions">{selector}<span class="live-dot">● Live calculations</span><span class="admin-chip">AY</span></div></header>''' if pid else ''
+        if role=='MEDIA_BUYER_VIEWER':
+            bid=u.get('buyer_id');opts=''.join(f'<option value="{x["id"]}" {"selected" if x["id"]==pid else ""}>{esc(x["label"])}</option>' for x in period_list())
+            selector=f'''<label class="period-switch"><small>Period</small><select onchange="location.href='/buyer/'+this.value+'/{bid}'">{opts}</select></label>'''
+        else:
+            opts=''.join(f'<option value="{x["id"]}" {"selected" if x["id"]==pid else ""}>{esc(x["label"])}</option>' for x in period_list())
+            selector=f'''<label class="period-switch"><small>Period</small><select onchange="location.href='/dashboard/'+this.value">{opts}</select></label>'''
+    initials=''.join(x[0] for x in (u.get('name') or 'User').split()[:2]).upper() or 'U'
+    role_html=f'<span class="role-chip {"admin" if role=="ADMIN" else "manager" if role=="MANAGER" else "viewer"}">{esc(role_label(role))}</span>' if role else ''
+    topbar=f'''<header class="appbar"><div><span class="eyebrow">Commission & performance hub</span><strong>{esc(p['label']) if p else 'YOUSSEF.COM'}</strong></div><div class="appbar-actions">{selector}{role_html}<span class="live-dot">● Live calculations</span><span class="admin-chip">{esc(initials)}</span></div></header>''' if pid else ''
     return f'''<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#102e57"><title>{esc(title)} · YOUSSEF.COM</title><style>{APP_CSS}</style></head><body><div class="shell">{nav(pid)}<div class="workspace">{topbar}<main class="content">{body}</main></div></div></body></html>'''.encode()
 
 def bar_chart(items,value_key,label_key='market',currency=False):
@@ -222,6 +256,26 @@ def periods_page(pid):
     return page('Months',body,p)
 
 
+def viewer_periods_page(pid):
+    p=period(pid);u=request_user();bid=u.get('buyer_id');rows=[]
+    for pr in period_list():
+        x=buyer_calc(pr['id'],bid);rows.append(f'''<tr><td><strong>{esc(pr['label'])}</strong></td><td class="num">{x['deliveries']:,}</td><td class="num">{money(x['gross'])}</td><td class="num {'negative' if x['final']<0 else 'positive'}"><strong>{money(x['final'])}</strong></td><td class="num">{money(x['carry_forward'])}</td><td><a class="btn secondary" href="/buyer/{pr['id']}/{bid}">Open</a></td></tr>''')
+    body=f'''<section class="hero"><div><span class="eyebrow">My history</span><h1>Months</h1><p>Read-only access to your own commission history.</p></div></section><div class="viewer-banner">Your account can only view the media buyer linked to this login. Team and administration data are hidden.</div><div class="panel"><div class="table-wrap"><table><thead><tr><th>Period</th><th class="num">Deliveries</th><th class="num">Generated CMS MAD</th><th class="num">Final Payout MAD</th><th class="num">Credit Forward MAD</th><th></th></tr></thead><tbody>{''.join(rows)}</tbody></table></div></div>'''
+    return page('My Months',body,p)
+
+def users_page(pid,error='',notice=''):
+    p=period(pid);c=db();users=c.execute('''select u.*,b.name buyer_name from users u left join buyers b on b.id=u.buyer_id order by case u.role when 'ADMIN' then 0 when 'MANAGER' then 1 else 2 end,u.name''').fetchall();buyers=c.execute('select id,name,status from buyers order by name').fetchall();c.close()
+    buyer_opts='<option value="">Not linked</option>'+''.join(f'<option value="{b["id"]}">{esc(b["name"])} · {esc(b["status"])}</option>' for b in buyers)
+    cards=[]
+    current=request_user()
+    for u in users:
+        cls='admin' if u['role']=='ADMIN' else 'manager' if u['role']=='MANAGER' else 'viewer';status_cls='good' if u['status']=='ACTIVE' else 'former'
+        self_acct=(u['id']==current.get('id'))
+        cards.append(f'''<div class="user-card"><div class="user-card-head"><span class="avatar lg">{''.join(x[0] for x in u['name'].split()[:2]).upper()}</span><span class="pill {status_cls}">{esc(u['status'])}</span></div><h3>{esc(u['name'])}</h3><p>{esc(u['email'])}</p><span class="role-chip {cls}">{esc(role_label(u['role']))}</span><div class="user-meta"><span><small>Linked buyer</small><b>{esc(u['buyer_name'] or '—')}</b></span><span><small>Created</small><b>{esc((u['created_at'] or '')[:10] or '—')}</b></span></div><form method="post" action="/users/{pid}/update/{u['id']}"><div class="field"><label>Role</label><select name="role"><option value="ADMIN" {'selected' if u['role']=='ADMIN' else ''}>Admin</option><option value="MANAGER" {'selected' if u['role']=='MANAGER' else ''}>Manager</option><option value="MEDIA_BUYER_VIEWER" {'selected' if u['role']=='MEDIA_BUYER_VIEWER' else ''}>Media Buyer Viewer</option></select></div><div class="field"><label>Linked media buyer</label><select name="buyer_id"><option value="">Not linked</option>{''.join(f'<option value="{b["id"]}" {"selected" if u["buyer_id"]==b["id"] else ""}>{esc(b["name"])}</option>' for b in buyers)}</select></div><button class="btn secondary" type="submit">Save access</button></form><form method="post" action="/users/{pid}/reset/{u['id']}" class="user-actions"><input name="password" type="password" minlength="8" placeholder="New password (8+ chars)" required><button class="btn secondary">Reset</button></form>{'' if self_acct else f'<form method="post" action="/users/{pid}/status/{u["id"]}" class="user-actions"><input type="hidden" name="status" value="{"DISABLED" if u["status"]=="ACTIVE" else "ACTIVE"}"><span></span><button class="btn {"ghost-danger" if u["status"]=="ACTIVE" else "secondary"}">{"Disable" if u["status"]=="ACTIVE" else "Reactivate"}</button></form>'}</div>''')
+    msg=(f'<div class="notice">{esc(error)}</div>' if error else '')+(f'<div class="viewer-banner">{esc(notice)}</div>' if notice else '')
+    body=f'''<section class="hero"><div><span class="eyebrow">Security & access</span><h1>Users & Roles</h1><p>Create accounts, assign access levels, link viewer accounts to a media buyer, and disable access without deleting history.</p></div><span class="role-chip admin">Admin only</span></section>{msg}<div class="permission-grid"><div class="permission-card"><h3>Admin</h3><p>Full platform access including Users & Roles, imports, rules, calculations and team management.</p></div><div class="permission-card"><h3>Manager</h3><p>Operational access to months, imports, buyers, products, calculations and reviews. No user/security administration.</p></div><div class="permission-card"><h3>Media Buyer Viewer</h3><p>Read-only account linked to one media buyer. Can only open that buyer's own monthly performance and history.</p></div></div><div class="panel add-panel"><div><span class="eyebrow">New account</span><h2>Add user</h2><p class="muted">Viewer accounts must be linked to a media buyer.</p></div><form method="post" action="/users/{pid}" class="product-form"><input name="name" placeholder="Full name" required><input name="email" type="email" placeholder="Email" required><input name="password" type="password" minlength="8" placeholder="Password (8+ chars)" required><select name="role" required><option value="MANAGER">Manager</option><option value="MEDIA_BUYER_VIEWER">Media Buyer Viewer</option><option value="ADMIN">Admin</option></select><select name="buyer_id">{buyer_opts}</select><button class="btn">+ Create user</button></form></div><div class="user-card-grid">{''.join(cards)}</div>'''
+    return page('Users & Roles',body,p)
+
 def login(error=''):
     return f'''<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#102e57"><title>YOUSSEF.COM</title><style>{APP_CSS}</style></head><body><div class="loginwrap"><div class="login-visual">{logo()}<div><span class="eyebrow light">Private commission intelligence</span><h1>Turn monthly exports into clear, auditable payouts.</h1><p>Performance, spend, upsells, bonuses and final commission — in one workspace.</p></div></div><div class="login"><div class="mobile-logo">{logo('compact')}</div><span class="eyebrow">Secure access</span><h1>Welcome back</h1><p class="muted">Sign in to YOUSSEF.COM.</p>{f'<div class="notice">{esc(error)}</div>' if error else ''}<form method="post" autocomplete="on"><div class="field"><label>Email</label><input name="email" type="email" autocomplete="username" value="{esc(ADMIN_EMAIL)}"></div><div class="field"><label>Password</label><input name="password" type="password" autocomplete="current-password"></div><button class="btn" style="width:100%">Sign in</button></form></div></div></body></html>'''.encode()
 
@@ -230,9 +284,19 @@ class H(BaseHTTPRequestHandler):
         self.send_response(status);self.send_header('Content-Type',ctype);self.send_header('Content-Length',str(len(data)));[self.send_header(k,v) for k,v in (headers or {}).items()];self.end_headers();self.wfile.write(data)
     def redirect(self,loc,headers=None): self.out(b'',302,'text/plain',{'Location':loc,**(headers or {})})
     def authed(self):
-        c=SimpleCookie(self.headers.get('Cookie'));s=c.get('sid');return bool(s and s.value in SESS)
+        return bool(self.user())
     def user(self):
-        c=SimpleCookie(self.headers.get('Cookie'));s=c.get('sid');return SESS.get(s.value) if s else None
+        c=SimpleCookie(self.headers.get('Cookie'));s=c.get('sid')
+        if not s or s.value not in SESS:return None
+        sess=SESS.get(s.value) or {}
+        conn=db();row=conn.execute('select id,email,name,role,buyer_id,status from users where id=?',(sess.get('id'),)).fetchone();conn.close()
+        if not row or row['status']!='ACTIVE':
+            SESS.pop(s.value,None);return None
+        fresh=dict(row);SESS[s.value]=fresh;return fresh
+    def set_request_user(self):
+        REQUEST_USER.set(self.user() or {})
+    def forbidden(self,msg='Access denied'):
+        return self.out(f'<h1>{esc(msg)}</h1>'.encode(),403,'text/html; charset=utf-8')
     def form(self):
         n=int(self.headers.get('Content-Length','0'));return {k:v[-1] for k,v in parse_qs(self.rfile.read(n).decode()).items()}
     def do_GET(self):
@@ -249,17 +313,38 @@ class H(BaseHTTPRequestHandler):
         if path=='/login':return self.out(login())
         if path=='/logout':return self.redirect('/login',{'Set-Cookie':'sid=; Max-Age=0; Path=/'})
         if not self.authed():return self.redirect('/login')
+        self.set_request_user()
         if path=='/':
-            c=db();p=c.execute('select id from periods order by year desc,month desc limit 1').fetchone();c.close();return self.redirect(f'/dashboard/{p["id"]}' if p else '/new')
-        if path.startswith('/dashboard/'):return self.out(dashboard(int(path.split('/')[-1])))
-        if path.startswith('/periods/'):return self.out(periods_page(int(path.split('/')[-1])))
-        if path.startswith('/buyers/'):return self.out(buyers_page(int(path.split('/')[-1])))
+            c=db();p=c.execute('select id from periods order by year desc,month desc limit 1').fetchone();c.close()
+            if not p:return self.redirect('/new') if can_operate() else self.forbidden('No period available')
+            if is_viewer():
+                bid=request_user().get('buyer_id');return self.redirect(f'/buyer/{p["id"]}/{bid}') if bid else self.forbidden('Viewer account is not linked to a media buyer')
+            return self.redirect(f'/dashboard/{p["id"]}')
+        if path.startswith('/dashboard/'):
+            pid=int(path.split('/')[-1])
+            if is_viewer():
+                bid=request_user().get('buyer_id');return self.redirect(f'/buyer/{pid}/{bid}') if bid else self.forbidden('Viewer account is not linked to a media buyer')
+            return self.out(dashboard(pid))
+        if path.startswith('/my-periods/'):
+            if not is_viewer():return self.redirect(f'/periods/{int(path.split('/')[-1])}')
+            return self.out(viewer_periods_page(int(path.split('/')[-1])))
+        if path.startswith('/periods/'):
+            if is_viewer():return self.redirect(f'/my-periods/{int(path.split('/')[-1])}')
+            return self.out(periods_page(int(path.split('/')[-1])))
+        if path.startswith('/users/'):
+            if not is_admin():return self.forbidden('Admin access required')
+            return self.out(users_page(int(path.split('/')[-1])))
+        if path.startswith('/buyers/'):
+            if is_viewer():return self.forbidden('Viewer accounts cannot access the team list')
+            return self.out(buyers_page(int(path.split('/')[-1])))
         if path.startswith('/buyer/'):
-            _,_,pid,bid=path.split('/');return self.out(buyer_page(int(pid),int(bid)))
+            _,_,pid,bid=path.split('/');pid=int(pid);bid=int(bid)
+            if is_viewer() and int(request_user().get('buyer_id') or 0)!=bid:return self.forbidden('You can only view your own media-buyer dashboard')
+            return self.out(buyer_page(pid,bid))
+        if is_viewer() and any(path.startswith(x) for x in ('/settings/','/adjustments/','/cities/','/african-upsells/','/review/','/imports/','/commission-rules/','/products/','/export/')):return self.forbidden('Read-only viewer account')
         if path.startswith('/settings/'):return self.out(settings_page(int(path.split('/')[-1])))
         if path.startswith('/adjustments/'):return self.out(adjustments_page(int(path.split('/')[-1])))
         if path.startswith('/cities/'):return self.out(cities_page(int(path.split('/')[-1])))
-        if self.user().get('role')=='MEDIA_BUYER_VIEWER':return self.out(b'Read-only account',403,'text/plain')
         if path.startswith('/african-upsells/'):return self.out(african_upsells_page(int(path.split('/')[-1]),query.get('status',['PENDING'])[0]))
         if path.startswith('/review/'):return self.out(review_page(int(path.split('/')[-1])))
         if path.startswith('/imports/'):return self.out(imports_page(int(path.split('/')[-1])))
@@ -268,7 +353,9 @@ class H(BaseHTTPRequestHandler):
         if path.startswith('/products/'):return self.out(products_page(int(path.split('/')[-1])))
         if path.startswith('/export/'):
             pid=int(path.split('/')[-1]);out=BASE/f'YOUSSEF_COM_Commission_{pid}.xlsx';export_summary(pid,out);return self.out(out.read_bytes(),200,'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',{'Content-Disposition':f'attachment; filename="{out.name}"'})
-        if path=='/new':return self.out(page('New Month','''<section class="hero"><div><span class="eyebrow">New workspace</span><h1>Create commission month</h1><p>Start a clean monthly calculation period.</p></div></section><div class="panel narrow"><form method="post" action="/new"><div class="formrow two"><div class="field"><label>Year</label><input name="year" value="2026"></div><div class="field"><label>Month</label><input name="month" value="8"></div></div><button class="btn">Create month</button></form></div>'''))
+        if path=='/new':
+            if not can_operate():return self.forbidden('Read-only viewer account')
+            return self.out(page('New Month','''<section class="hero"><div><span class="eyebrow">New workspace</span><h1>Create commission month</h1><p>Start a clean monthly calculation period.</p></div></section><div class="panel narrow"><form method="post" action="/new"><div class="formrow two"><div class="field"><label>Year</label><input name="year" value="2026"></div><div class="field"><label>Month</label><input name="month" value="8"></div></div><button class="btn">Create month</button></form></div>'''))
         self.out(b'Not found',404,'text/plain')
     def do_POST(self):
         u=urlparse(self.path);path=u.path;query=parse_qs(u.query)
@@ -276,12 +363,43 @@ class H(BaseHTTPRequestHandler):
             f=self.form()
             c=db();u=c.execute('select * from users where email=? and status="ACTIVE"',(f.get('email','').lower(),)).fetchone();c.close()
             if u and vp(f.get('password',''),u['password_hash']):
-                sid=secrets.token_urlsafe(24);SESS[sid]={'id':u['id'],'role':u['role'],'buyer_id':u['buyer_id'],'name':u['name']};return self.redirect('/',{'Set-Cookie':f'sid={sid}; HttpOnly; SameSite=Lax; Path=/; Max-Age=43200'})
+                c=db();c.execute('update users set last_login_at=? where id=?',(datetime.now().isoformat(timespec='seconds'),u['id']));c.commit();c.close()
+                sid=secrets.token_urlsafe(24);SESS[sid]={'id':u['id'],'role':u['role'],'buyer_id':u['buyer_id'],'name':u['name'],'email':u['email']};return self.redirect('/',{'Set-Cookie':f'sid={sid}; HttpOnly; SameSite=Lax; Path=/; Max-Age=43200'})
             return self.out(login('Invalid email or password.'),401)
         if not self.authed():return self.redirect('/login')
+        self.set_request_user()
+        if path.startswith('/users/'):
+            if not is_admin():return self.forbidden('Admin access required')
+            parts=path.strip('/').split('/');pid=int(parts[1])
+            if len(parts)==2:
+                f=self.form();name=f.get('name','').strip();email=f.get('email','').strip().lower();password=f.get('password','');role=f.get('role','MANAGER');buyer_id=int(f['buyer_id']) if f.get('buyer_id') else None
+                if role not in ('ADMIN','MANAGER','MEDIA_BUYER_VIEWER'):return self.out(users_page(pid,'Invalid role.'),400)
+                if role=='MEDIA_BUYER_VIEWER' and not buyer_id:return self.out(users_page(pid,'Media Buyer Viewer must be linked to a media buyer.'),400)
+                if len(password)<8:return self.out(users_page(pid,'Password must contain at least 8 characters.'),400)
+                c=db()
+                try:c.execute('insert into users(email,name,password_hash,role,buyer_id,status,created_at) values(?,?,?,?,?,?,?)',(email,name,hp(password),role,buyer_id,'ACTIVE',datetime.now().isoformat(timespec='seconds')));c.commit()
+                except Exception as e:c.close();return self.out(users_page(pid,'Could not create user. The email may already exist.'),400)
+                c.close();return self.redirect(f'/users/{pid}')
+            action=parts[2] if len(parts)>2 else '';uid=int(parts[3]) if len(parts)>3 else 0;f=self.form();c=db();target=c.execute('select * from users where id=?',(uid,)).fetchone()
+            if not target:c.close();return self.out(users_page(pid,'User not found.'),404)
+            if action=='status':
+                if uid==request_user().get('id'):c.close();return self.out(users_page(pid,'You cannot disable your own account.'),400)
+                status=f.get('status','ACTIVE');status='ACTIVE' if status=='ACTIVE' else 'DISABLED';c.execute('update users set status=? where id=?',(status,uid));c.commit();c.close();return self.redirect(f'/users/{pid}')
+            if action=='reset':
+                password=f.get('password','');
+                if len(password)<8:c.close();return self.out(users_page(pid,'Password must contain at least 8 characters.'),400)
+                c.execute('update users set password_hash=? where id=?',(hp(password),uid));c.commit();c.close();return self.redirect(f'/users/{pid}')
+            if action=='update':
+                role=f.get('role');buyer_id=int(f['buyer_id']) if f.get('buyer_id') else None
+                if role not in ('ADMIN','MANAGER','MEDIA_BUYER_VIEWER'):c.close();return self.out(users_page(pid,'Invalid role.'),400)
+                if role=='MEDIA_BUYER_VIEWER' and not buyer_id:c.close();return self.out(users_page(pid,'Media Buyer Viewer must be linked to a media buyer.'),400)
+                if uid==request_user().get('id') and role!='ADMIN':c.close();return self.out(users_page(pid,'You cannot remove your own Admin role.'),400)
+                c.execute('update users set role=?,buyer_id=? where id=?',(role,buyer_id,uid));c.commit();c.close();return self.redirect(f'/users/{pid}')
+            c.close();return self.redirect(f'/users/{pid}')
         if path=='/new':
-            if self.user().get('role')=='MEDIA_BUYER_VIEWER':return self.out(b'Read-only account',403,'text/plain')
+            if not can_operate():return self.forbidden('Read-only viewer account')
             f=self.form();pid=ensure_period(int(f['year']),int(f['month']));return self.redirect(f'/dashboard/{pid}')
+        if not can_operate():return self.forbidden('Read-only viewer account')
         if path.startswith('/african-upsells/'):
             pid=int(path.split('/')[-1]);n=int(self.headers.get('Content-Length','0'));f=parse_qs(self.rfile.read(n).decode());single=f.get('single',[None])[0]
             if single and ':' in single:
@@ -334,4 +452,4 @@ class H(BaseHTTPRequestHandler):
         self.out(b'Not found',404,'text/plain')
 
 if __name__=='__main__':
-    init_db();ensure_admin();print(f'YOUSSEF.COM v9.2 Online running at http://{HOST}:{PORT}');ThreadingHTTPServer((HOST,PORT),H).serve_forever()
+    init_db();ensure_admin();print(f'YOUSSEF.COM v9.3 Online running at http://{HOST}:{PORT}');ThreadingHTTPServer((HOST,PORT),H).serve_forever()
