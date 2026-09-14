@@ -1,14 +1,10 @@
-# Update an existing Railway v9 deployment to v9.1
+# Update an existing Railway deployment to YOUSSEF.COM v9.2
 
-You do NOT need to create a new Railway project.
+1. Keep the existing Railway project, `/data` volume, variables and public domain.
+2. Upload/replace **server.py** from this package in the root of the same GitHub repository.
+3. You may also replace README.md. No database file needs to be uploaded.
+4. Commit the change. Railway should redeploy automatically.
+5. Wait for Deployment successful / Active.
+6. Open `/login` and hard refresh with Ctrl+F5.
 
-1. Extract this package.
-2. In the existing private GitHub repository `youssef-com`, replace/upload the files from this folder.
-3. At minimum, `server.py` must be replaced. It is also recommended to upload `.dockerignore`, `.gitignore`, `README.md`, and this file.
-4. Commit the changes to the same branch Railway is already watching.
-5. Railway should start a new deployment automatically. If not, open the service and choose Redeploy.
-6. Do not remove or recreate the `/data` volume.
-7. Do not change `DATA_DIR`, `ADMIN_EMAIL`, `ADMIN_PASSWORD`, or `SECRET_KEY` unless you intentionally want to change them.
-8. When deployment is successful, open the existing Railway URL and hard-refresh the browser with Ctrl+F5.
-
-Your data remains on the attached `/data` volume and is not replaced by this code update.
+v9.2 embeds the full CSS directly in server.py, so the interface does not rely on Railway serving a static CSS file.
