@@ -594,6 +594,54 @@ def add_product(name,market_code,commission_value,price_local,local_mad):
     c.commit();c.close();recalculate_product_deliveries(product_id)
 
 
+# Centralized conversion rates (local selling-price currency to MAD).
+MARKET_CURRENCY={'MAROC':'MAD','RDC':'USD','MALI':'XOF','GUINEE':'GNF','CONGO':'XAF','CAMEROUN':'XAF','TOGO':'XOF','BENIN':'XOF','GABON':'XAF','TCHAD':'XAF','BURKINA_FASO':'XOF','LEBANON':'USD','TUNISIA':'TND'}
+DEFAULT_CURRENCY_RATES={'MAD':1.0,'USD':9.4,'XOF':0.015,'XAF':0.015,'GNF':0.0011}
+
+def ensure_currency_rates(c):
+    c.execute('create table if not exists currency_rates(currency text primary key,mad_rate real,updated_at text)')
+    for cur,rate in DEFAULT_CURRENCY_RATES.items():
+        c.execute('insert or ignore into currency_rates(currency,mad_rate,updated_at) values(?,?,?)',(cur,rate,datetime.now().isoformat(timespec='seconds')))
+    for cur in set(MARKET_CURRENCY.values()):
+        c.execute('insert or ignore into currency_rates(currency,mad_rate,updated_at) values(?,?,?)',(cur,None,datetime.now().isoformat(timespec='seconds')))
+    c.commit()
+
+def list_currency_rates():
+    c=db();ensure_currency_rates(c);rows=c.execute('select * from currency_rates order by currency').fetchall();c.close();return rows
+
+def save_currency_rates(form):
+    c=db();ensure_currency_rates(c)
+    updates=[]
+    for cur in set(MARKET_CURRENCY.values()):
+        raw=str(form.get('rate_'+cur,'')).strip()
+        if not raw:
+            if cur=='MAD':raise ValueError('MAD must remain 1.0')
+            val=None
+        else:
+            val=float(raw)
+            if val<=0:raise ValueError('Currency rates must be positive')
+        if cur=='MAD' and val!=1.0:raise ValueError('MAD must remain 1.0')
+        updates.append((val,datetime.now().isoformat(timespec='seconds'),cur))
+    for val,stamp,cur in updates:c.execute('update currency_rates set mad_rate=?,updated_at=? where currency=?',(val,stamp,cur))
+    # Keep product conversion values in sync with the centralized currency setting.
+    for code,cur in MARKET_CURRENCY.items():
+        val=next(v for v,_,cc in updates if cc==cur)
+        if val is not None:c.execute('update products set local_mad=? where market_id=(select id from markets where code=?)',(val,code))
+    c.commit();c.close()
+
+def edit_product_info(product_id,name,price,commission):
+    name=str(name or '').strip();price=float(price);commission=float(commission)
+    if not name or price<=0 or commission<0:raise ValueError('Invalid product name, price or commission')
+    c=db();p=c.execute('select p.*,m.code market_code from products p join markets m on m.id=p.market_id where p.id=?',(product_id,)).fetchone()
+    if not p:c.close();raise ValueError('Product not found')
+    try:
+        c.execute('update products set name=?,name_norm=?,price_local=?,commission_mad=?,commission_usd=? where id=?',(name,norm(name),price,commission if p['market_code']=='MAROC' else 0,0 if p['market_code']=='MAROC' else commission,product_id))
+        c.execute('insert into product_offers(product_id,price,commission,created_at) values(?,?,?,?) on conflict(product_id,price) do update set commission=excluded.commission',(product_id,price,commission,datetime.now().isoformat(timespec='seconds')))
+        c.commit()
+    except Exception:c.rollback();raise
+    finally:c.close()
+    # Intentionally do not recalculate historical deliveries on edits.
+
 def update_product_conversion(product_id,rate):
     rate=float(rate)
     if rate<=0:raise ValueError('Conversion must be positive')
