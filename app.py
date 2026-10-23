@@ -41,6 +41,8 @@ def init_db(reset=False):
     create table if not exists imports(id integer primary key,period_id int,kind text,market_code text,filename text,rows_imported int,warnings int,created_at text);
     create table if not exists users(id integer primary key,email text unique not null,name text not null,password_hash text not null,role text not null default 'MEDIA_BUYER_VIEWER',buyer_id integer,status text not null default 'ACTIVE',created_at text,last_login_at text);
     ''')
+    c.executescript("""create table if not exists product_offers(id integer primary key,product_id integer not null,price real not null,commission real not null,effective_date text,note text,created_at text,unique(product_id,price));
+    create table if not exists remise_reviews(id integer primary key,delivery_id integer not null unique,period_id integer not null,buyer_id integer,product_id integer,reference_price real,delivered_price real,gap_local real,rate_mad real,gap_mad real,decision text default 'PENDING',decided_at text);""")
     # Lightweight migrations for users upgrading an existing YOUSSEF.COM database.
     cols={r['name'] for r in c.execute('pragma table_info(deliveries)')}
     for col,ctype in [('delivery_date','text'),('product_id','integer'),('commission_rule_id','integer'),('tracking_number','text'),('upsell_candidate_mad','real default 0'),('upsell_decision',"text default 'NONE'"),('upsell_decided_at','text')]:
@@ -222,6 +224,7 @@ def seed_products(path):
             c.execute('insert into commission_rules(product_id,start_date,end_date,amount,currency,note,created_at) values(?,?,?,?,?,?,?)',(product_id,'1900-01-01',None,comm,currency,'Initial product master rate',datetime.now().isoformat(timespec='seconds')))
         elif len(rules)==1 and rules[0]['start_date']=='1900-01-01' and rules[0]['end_date'] is None:
             c.execute('update commission_rules set amount=?,currency=? where id=?',(comm,currency,rules[0]['id']))
+        c.execute('insert or ignore into product_offers(product_id,price,commission,created_at) values(?,?,?,?)',(product_id,price,comm,datetime.now().isoformat(timespec='seconds')))
         n+=1
     c.commit();c.close();return n
 
@@ -263,6 +266,8 @@ def apply_rule_amount(code,rule):
     return (0.0,amount) if code=='MAROC' else (amount,0.0)
 
 def recalculate_product_deliveries(product_id):
+    c0=db();has_offers=c0.execute('select count(*) n from product_offers where product_id=?',(product_id,)).fetchone()['n'];c0.close()
+    if has_offers:return recalculate_offers(product_id)
     c=db(); prod=c.execute('select p.*,m.code market_code from products p join markets m on m.id=p.market_id where p.id=?',(product_id,)).fetchone()
     if not prod:c.close();return 0
     changed=0
@@ -315,39 +320,94 @@ def delete_commission_rule(rule_id):
         c.execute('update commission_rules set end_date=? where id=?',(repaired_end,prev['id']))
     c.commit();c.close();recalculate_product_deliveries(pid)
 
+def offers_for(c,product_id):
+    offers=c.execute('select * from product_offers where product_id=? order by price',(product_id,)).fetchall()
+    if offers:return offers
+    p=c.execute('select * from products where id=?',(product_id,)).fetchone()
+    if not p:return []
+    m=c.execute('select code from markets where id=?',(p['market_id'],)).fetchone()
+    return [dict(id=None,price=p['price_local'],commission=p['commission_mad'] if m['code']=='MAROC' else p['commission_usd'])]
+
+def match_offer(c,product_id,delivered_price,allow_remise=True):
+    offers=offers_for(c,product_id)
+    exact=[o for o in offers if abs(float(o['price'] or 0)-delivered_price)<0.005]
+    if exact:return exact[0],False
+    higher=[o for o in offers if float(o['price'] or 0)>delivered_price+0.005]
+    if allow_remise and higher:return min(higher,key=lambda o:float(o['price'])),True
+    return None,False
+
+def order_is_multi(raw):
+    lines=parse_product_lines(raw)
+    if len(lines)>1:return True
+    return bool(re.search(r'(?:\b(?:qty|quantity|quantit[eé])\s*[:x]?\s*[2-9]\b|\bx\s*[2-9]\b|\bpack\s+de\s+[2-9]\b)',str(raw),re.I))
+
+def add_product_offer(product_id,price,commission,effective_date='',note=''):
+    price=float(price);commission=float(commission)
+    if price<=0 or commission<0:raise ValueError('Invalid price or commission')
+    date=(effective_date or '').strip() or None
+    if date:datetime.strptime(date,'%Y-%m-%d')
+    c=db();c.execute('insert into product_offers(product_id,price,commission,effective_date,note,created_at) values(?,?,?,?,?,?) on conflict(product_id,price) do update set commission=excluded.commission,effective_date=excluded.effective_date,note=excluded.note',(product_id,price,commission,date,note,datetime.now().isoformat(timespec='seconds')));c.commit();c.close()
+    recalculate_offers(product_id)
+
+def recalculate_offers(product_id):
+    c=db();ds=c.execute('select d.*,m.code market_code from deliveries d join markets m on m.id=d.market_id where d.product_id=?',(product_id,)).fetchall()
+    for d in ds:
+        multi=order_is_multi(d['product_raw']);offer,is_remise=match_offer(c,product_id,float(d['price'] or 0),not multi)
+        code=d['market_code'];usd=mad=0
+        if offer:usd,mad=(0,float(offer['commission'])) if code=='MAROC' else (float(offer['commission']),0)
+        c.execute('update deliveries set base_commission_usd=?,base_commission_mad=?,base_price_local=?,commission_rule_id=NULL where id=?',(usd,mad,float(offer['price']) if offer else None,d['id']))
+        if is_remise and offer and d['buyer_id']:
+            p=c.execute('select local_mad from products where id=?',(product_id,)).fetchone();rate=float(p['local_mad'] or 0);gap=round(float(offer['price'])-float(d['price']),4)
+            c.execute("""insert into remise_reviews(delivery_id,period_id,buyer_id,product_id,reference_price,delivered_price,gap_local,rate_mad,gap_mad,decision) values(?,?,?,?,?,?,?,?,?,'PENDING') on conflict(delivery_id) do update set reference_price=excluded.reference_price,delivered_price=excluded.delivered_price,gap_local=excluded.gap_local,rate_mad=excluded.rate_mad,gap_mad=excluded.gap_mad,decision=case when remise_reviews.reference_price=excluded.reference_price and remise_reviews.delivered_price=excluded.delivered_price and remise_reviews.rate_mad=excluded.rate_mad then remise_reviews.decision else 'PENDING' end""",(d['id'],d['period_id'],d['buyer_id'],product_id,float(offer['price']),float(d['price']),gap,rate,round(gap*rate,4)))
+        else:c.execute('delete from remise_reviews where delivery_id=?',(d['id'],))
+    c.commit();c.close()
+
+def remise_rows(period_id):
+    c=db();rows=c.execute("""select r.*,d.tracking_number,d.delivery_date,d.product_raw,b.name buyer,p.name product,m.code market from remise_reviews r join deliveries d on d.id=r.delivery_id join buyers b on b.id=r.buyer_id join products p on p.id=r.product_id join markets m on m.id=d.market_id where r.period_id=? order by r.decision desc,r.id desc""",(period_id,)).fetchall();c.close();return [dict(r) for r in rows]
+
+def decide_remise(period_id,ids,decision):
+    if decision not in ('APPROVED','REJECTED','PENDING'):raise ValueError('Invalid decision')
+    c=db()
+    for rid in ids:c.execute('update remise_reviews set decision=?,decided_at=? where id=? and period_id=?',(decision,datetime.now().isoformat(timespec='seconds'),int(rid),period_id))
+    c.commit();c.close()
+
 def import_deliveries(period_id,path,global_file=False):
     wb=load_workbook(path,read_only=True,data_only=True);ws=wb.active;it=ws.iter_rows(values_only=True); hdr=[str(x or '').strip() for x in next(it)];ix={h:i for i,h in enumerate(hdr)};c=db();src='GLOBAL' if global_file else 'MAROC'
     previous={}
     if global_file:
         for old in c.execute("select tracking_number,upsell_decision from deliveries where period_id=? and source='GLOBAL' and upsell_decision in ('APPROVED','REJECTED')",(period_id,)):
             if old['tracking_number']:previous[norm(old['tracking_number'])]=old['upsell_decision']
-    c.execute('delete from deliveries where period_id=? and source=?',(period_id,src)); settings=c.execute('select * from settings where period_id=?',(period_id,)).fetchone();n=w=0
+    old_remises={norm(r['tracking_number']):r['decision'] for r in c.execute('select d.tracking_number,r.decision from remise_reviews r join deliveries d on d.id=r.delivery_id where r.period_id=?',(period_id,)) if r['tracking_number']}
+    c.execute('delete from remise_reviews where period_id=?',(period_id,));c.execute('delete from deliveries where period_id=? and source=?',(period_id,src)); settings=c.execute('select * from settings where period_id=?',(period_id,)).fetchone();n=w=0
     for rn,r in enumerate(it,2):
         if str(r[ix.get('Delivery',-1)] or '').strip().lower()!='delivered':continue
         delivery_date=parse_delivery_date(r[ix.get('Date',2)] if 'Date' in ix else None)
         rawbuyer=r[ix.get('Sales Channel',3)];tracking=str(r[ix.get('Tracking Number',4)] or '') if 'Tracking Number' in ix else '';bid=find_buyer(c,rawbuyer);city=r[ix.get('City',13)] if 'City' in ix else '';dm=r[ix.get('Delivery Man',17)] if 'Delivery Man' in ix else '';code=market_from_city(city,dm,c) if global_file else 'MAROC';mid=market_id(c,code) if code else None; rawprod=str(r[ix.get('Products',6)] or '');bp=base_product_name(rawprod); prod=lookup_product(c,mid,bp) if mid else None
-        price=float(r[ix.get('Price',7)] or 0); paid=0.0;candidate=0.0;decision='NONE'; base_usd=base_mad=baseprice=localmad=0.0; rule_id=None; product_id=None; status=[]
+        is_remise=False;price=float(r[ix.get('Price',7)] or 0); paid=0.0;candidate=0.0;decision='NONE'; base_usd=base_mad=baseprice=localmad=0.0; rule_id=None; product_id=None; status=[]
         if not delivery_date:status.append('MISSING DELIVERY DATE')
         if not bid:status.append('UNMATCHED BUYER')
         if not mid:status.append('UNMAPPED COUNTRY')
         if prod:
             product_id=prod['id'];baseprice=float(prod['price_local'] or 0);localmad=float(prod['local_mad'] or 0)
-            rule=commission_rule_for(c,product_id,delivery_date)
-            if rule:rule_id=rule['id'];base_usd,base_mad=apply_rule_amount(code,rule)
-            else:status.append('MISSING COMMISSION PERIOD')
+            multi=order_is_multi(rawprod);offer,is_remise=match_offer(c,product_id,price,not multi)
+            if offer:baseprice=float(offer['price']);base_usd,base_mad=(0,float(offer['commission'])) if code=='MAROC' else (float(offer['commission']),0)
+            else:status.append('UNMATCHED OFFER PRICE')
             if code=='MAROC':
                 pct=float(settings['upsell_maroc'])
-                if pct>0 and baseprice>0 and price>baseprice:candidate=(price-baseprice)*pct*localmad
+                if multi and pct>0 and baseprice>0 and price>baseprice:candidate=(price-baseprice)*pct*localmad
                 paid=candidate;decision='AUTO' if candidate>0 else 'NONE'
             elif code in AFRICA_CODES:
                 pct=float(settings['upsell_africa'])
-                if pct>0 and baseprice>0 and price>baseprice:candidate=(price-baseprice)*pct*localmad
+                if multi and pct>0 and baseprice>0 and price>baseprice:candidate=(price-baseprice)*pct*localmad
                 if candidate>0:
                     decision=previous.get(norm(tracking),'PENDING');paid=candidate if decision=='APPROVED' else 0.0
             else:
                 candidate=paid=0.0;decision='NONE'
         else:status.append('MISSING PRODUCT/RATE')
-        c.execute('insert into deliveries(period_id,source,source_row,order_id,tracking_number,delivery_date,buyer_id,buyer_raw,market_id,city,product_id,commission_rule_id,product_raw,product_norm,price,base_commission_usd,base_commission_mad,base_price_local,local_mad,upsell_candidate_mad,upsell_mad,upsell_decision,status) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',(period_id,src,rn,str(r[ix.get('Id',0)] or ''),tracking,delivery_date,bid,str(rawbuyer or ''),mid,str(city or ''),product_id,rule_id,rawprod,norm(bp),price,base_usd,base_mad,baseprice,localmad,candidate,paid,decision,'OK' if not status else ', '.join(status)));n+=1;w+=1 if status else 0
+        c.execute('insert into deliveries(period_id,source,source_row,order_id,tracking_number,delivery_date,buyer_id,buyer_raw,market_id,city,product_id,commission_rule_id,product_raw,product_norm,price,base_commission_usd,base_commission_mad,base_price_local,local_mad,upsell_candidate_mad,upsell_mad,upsell_decision,status) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',(period_id,src,rn,str(r[ix.get('Id',0)] or ''),tracking,delivery_date,bid,str(rawbuyer or ''),mid,str(city or ''),product_id,rule_id,rawprod,norm(bp),price,base_usd,base_mad,baseprice,localmad,candidate,paid,decision,'OK' if not status else ', '.join(status)));
+        if prod and not order_is_multi(rawprod) and is_remise and bid:
+            gap=round(baseprice-price,4);gap_mad=round(gap*localmad,4);rid=c.execute('select last_insert_rowid() id').fetchone()['id'];c.execute('insert into remise_reviews(delivery_id,period_id,buyer_id,product_id,reference_price,delivered_price,gap_local,rate_mad,gap_mad,decision) values(?,?,?,?,?,?,?,?,?,?)',(rid,period_id,bid,product_id,baseprice,price,gap,localmad,gap_mad,old_remises.get(norm(tracking),'PENDING')))
+        n+=1;w+=1 if status else 0
     c.execute('insert into imports(period_id,kind,filename,rows_imported,warnings,created_at) values(?,?,?,?,?,?)',(period_id,'DELIVERIES_'+src,Path(path).name,n,w,datetime.now().isoformat(timespec='seconds')));c.commit();c.close();return n,w
 
 def import_spend(period_id,path,code):
@@ -385,7 +445,7 @@ def buyer_calc(period_id,buyer_id,include_history=True):
         if m['code']=='MAROC':morocco_del+=cnt
     mba,lab_a=bonus_for(africa_del,'AFRICA',s); mbm,lab_m=bonus_for(morocco_del,'MOROCCO',s);bonus=mba+mbm
     a=c.execute('select * from adjustments where period_id=? and buyer_id=?',(period_id,buyer_id)).fetchone(); a=dict(a) if a else dict(usdt_sent=0,charges=0,test_spend=0,wallet_rest=0,remise_mad=0,credit_mad=0,note='')
-    usdt_ded_mad=float(a['usdt_sent'])*float(s['usdt_mad']); remise_ded=float(a['remise_mad'])*float(s['remise_pct'])
+    usdt_ded_mad=float(a['usdt_sent'])*float(s['usdt_mad']); approved_remise=float(c.execute("select coalesce(sum(gap_mad),0) val from remise_reviews where period_id=? and buyer_id=? and decision='APPROVED'",(period_id,buyer_id)).fetchone()['val']);remise_ded=(float(a['remise_mad'])+approved_remise)*float(s['remise_pct']);a['approved_remise_mad']=approved_remise
     manual_credit=float(a.get('credit_mad',0) or 0)
     auto_credit=0.0
     if include_history:
@@ -497,3 +557,8 @@ def add_product(name,market_code,commission_value,price_local,local_mad):
         c.execute('update commission_rules set amount=?,currency=? where id=?',(commission,currency,rules[0]['id']))
     c.commit();c.close();recalculate_product_deliveries(product_id)
 
+
+def update_product_conversion(product_id,rate):
+    rate=float(rate)
+    if rate<=0:raise ValueError('Conversion must be positive')
+    c=db();c.execute('update products set local_mad=? where id=?',(rate,product_id));c.commit();c.close();recalculate_offers(product_id)
