@@ -212,8 +212,9 @@ def import_global_product_offers(path):
     try:
         for line,row in enumerate(ws.iter_rows(min_row=2,values_only=True),2):
             if not row or not any(x is not None for x in row):continue
-            if len(row)<5:skipped.append((line,'Missing columns'));continue
-            name,country,comm,price,rate=row[:5]
+            if len(row)<4:skipped.append((line,'Missing columns'));continue
+            name,country,comm,price=row[:4]
+            rate=row[4] if len(row)>4 else None
             if not name or not country:skipped.append((line,'Missing product/market'));continue
             code=market_from_country_text(str(country))
             if not code:skipped.append((line,'Unknown market: '+str(country)));continue
