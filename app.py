@@ -204,6 +204,41 @@ def previous_period_id(period_id):
 def period_list():
     c=db();rs=c.execute('select * from periods order by year desc,month desc').fetchall();c.close();return [dict(r) for r in rs]
 
+
+def import_global_product_offers(path):
+    """Non-destructive all-market workbook import; never overwrite existing offers or history."""
+    wb=load_workbook(path,read_only=True,data_only=True); ws=wb.active
+    c=db(); added=0; offers_added=0; skipped=[]; touched=set()
+    try:
+        for line,row in enumerate(ws.iter_rows(min_row=2,values_only=True),2):
+            if not row or not any(x is not None for x in row):continue
+            if len(row)<5:skipped.append((line,'Missing columns'));continue
+            name,country,comm,price,rate=row[:5]
+            if not name or not country:skipped.append((line,'Missing product/market'));continue
+            code=market_from_country_text(str(country))
+            if not code:skipped.append((line,'Unknown market: '+str(country)));continue
+            try:
+                comm=float(comm);price=float(price);rate=float(rate or 0)
+                if comm<0 or price<=0 or rate<0:raise ValueError()
+            except (TypeError,ValueError):skipped.append((line,'Invalid price, commission or rate'));continue
+            mid=market_id(c,code); n=norm(str(name).strip())
+            existing=c.execute('select id from products where name_norm=? and market_id=?',(n,mid)).fetchone()
+            if existing: product_id=existing['id']
+            else:
+                cu,cm=(0,comm) if code=='MAROC' else (comm,0)
+                c.execute('insert into products(name,name_norm,market_id,commission_usd,commission_mad,price_local,local_mad) values(?,?,?,?,?,?,?)',(str(name).strip(),n,mid,cu,cm,price,rate))
+                product_id=c.execute('select last_insert_rowid() id').fetchone()['id'];added+=1
+                currency='MAD' if code=='MAROC' else 'USD'
+                c.execute('insert into commission_rules(product_id,start_date,end_date,amount,currency,note,created_at) values(?,?,?,?,?,?,?)',(product_id,'1900-01-01',None,comm,currency,'Initial global workbook import',datetime.now().isoformat(timespec='seconds')))
+            before=c.total_changes
+            c.execute('insert or ignore into product_offers(product_id,price,commission,created_at) values(?,?,?,?)',(product_id,price,comm,datetime.now().isoformat(timespec='seconds')))
+            if c.total_changes>before:offers_added+=1;touched.add(product_id)
+        c.commit()
+    except Exception:
+        c.rollback();raise
+    finally:c.close()
+    return {'products_added':added,'offers_added':offers_added,'skipped':skipped,'affected_products':len(touched)}
+
 def seed_products(path):
     """Import product master. Morocco commission values are native MAD; all other markets remain USD."""
     wb=load_workbook(path,read_only=True,data_only=True); ws=wb.active; c=db(); n=0

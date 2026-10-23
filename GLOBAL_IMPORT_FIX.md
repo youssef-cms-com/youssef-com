@@ -1,0 +1,1 @@
+Global product workbook import: selects markets per row; non-destructive insert of missing products/offers; no historical recalculation. Country field applies to spend only. Backup live SQLite volume before deploying. This is a Python/Railway backend build, NOT a Netlify Drop bundle.
