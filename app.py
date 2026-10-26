@@ -114,13 +114,16 @@ def recalculate_city_deliveries(city):
         parts=[x.strip() for x in str(d['status'] or '').split(',') if x.strip() and x.strip() not in ('OK','UNMAPPED COUNTRY','MISSING PRODUCT/RATE','MISSING COMMISSION PERIOD')]
         if not mid:parts.append('UNMAPPED COUNTRY')
         if prod:
-            product_id=prod['id'];baseprice=float(prod['price_local'] or 0);localmad=float(prod['local_mad'] or 0);rule=commission_rule_for(c,product_id,d['delivery_date'])
-            if rule:rule_id=rule['id'];base_usd,base_mad=apply_rule_amount(code,rule)
-            else:parts.append('MISSING COMMISSION PERIOD')
-            st=c.execute('select * from settings where period_id=?',(d['period_id'],)).fetchone();pct=float(st['upsell_africa']) if code in AFRICA_CODES else 0
-            if pct>0 and baseprice>0 and float(d['price'] or 0)>baseprice:candidate=(float(d['price'])-baseprice)*pct*localmad
+            product_id=prod['id'];localmad=float(prod['local_mad'] or 0)
+            offer,is_remise,multi,classification=classify_sale(c,product_id,d['product_raw'] or '',float(d['price'] or 0))
+            baseprice=float(offer['price']) if offer else float(prod['price_local'] or 0)
+            if offer:base_usd,base_mad=(0,float(offer['commission'])) if code=='MAROC' else (float(offer['commission']),0)
+            else:parts.append('UNMATCHED OFFER PRICE')
+            st=c.execute('select * from settings where period_id=?',(d['period_id'],)).fetchone()
+            candidate=upsell_values(code,st,baseprice,float(d['price'] or 0),localmad,multi)
             if candidate>0 and code in AFRICA_CODES:
                 old=(d['upsell_decision'] or '').upper();decision=old if old in ('APPROVED','REJECTED') else 'PENDING';paid=candidate if decision=='APPROVED' else 0.0
+            elif candidate>0 and code=='MAROC':decision='AUTO';paid=candidate
         elif mid:parts.append('MISSING PRODUCT/RATE')
         status='OK' if not parts else ', '.join(dict.fromkeys(parts))
         c.execute('update deliveries set market_id=?,product_id=?,commission_rule_id=?,base_commission_usd=?,base_commission_mad=?,base_price_local=?,local_mad=?,upsell_candidate_mad=?,upsell_mad=?,upsell_decision=?,status=? where id=?',(mid,product_id,rule_id,base_usd,base_mad,baseprice,localmad,candidate,paid,decision,status,d['id']));changed+=1
@@ -275,7 +278,7 @@ def lookup_product(c,mid,raw_name):
     n=norm(raw_name); r=c.execute('select * from products where market_id=? and name_norm=?',(mid,n)).fetchone()
     if r:return r
     # For single-line pack/x2 orders, use the single product as the base item if available.
-    stripped=re.sub(r'\s*\(pack de \d+\)\s*',' ',raw_name,flags=re.I); stripped=re.sub(r'\s+x\s*\d+\s*$','',stripped,flags=re.I); sn=norm(stripped)
+    stripped=re.sub(r'\s+x\s*\d+\s*$','',stripped,flags=re.I); sn=norm(stripped)
     if sn!=n:
         r=c.execute('select * from products where market_id=? and name_norm=?',(mid,sn)).fetchone()
         if r:return r
@@ -373,9 +376,35 @@ def match_offer(c,product_id,delivered_price,allow_remise=True):
     return None,False
 
 def order_is_multi(raw):
-    lines=parse_product_lines(raw)
-    if len(lines)>1:return True
-    return bool(re.search(r'(?:\b(?:qty|quantity|quantit[eé])\s*[:x]?\s*[2-9]\b|\bx\s*[2-9]\b|\bpack\s+de\s+[2-9]\b)',str(raw),re.I))
+    """Only separate product lines imply multiple items; Pack de N is a product name."""
+    return len(parse_product_lines(raw)) > 1
+
+def classify_sale(c, product_id, raw, delivered_price):
+    """Return base offer, remise flag, upsell flag, and reason.
+
+    Exact single-unit offers always take priority over inferred bundles.
+    A high-price single-line order is a review candidate, not proof of quantity.
+    """
+    offers=offers_for(c,product_id)
+    if not offers:return None,False,False,'NO_OFFERS'
+    multi=order_is_multi(raw)
+    if multi:
+        base=min(offers,key=lambda o:float(o['price']))
+        return base,False,True,'MULTIPLE_PRODUCT_LINES'
+    exact=next((o for o in offers if abs(float(o['price'])-delivered_price)<0.005),None)
+    if exact:return exact,False,False,'EXACT_SINGLE_OFFER'
+    higher=[o for o in offers if float(o['price'])>delivered_price+0.005]
+    if higher:return min(higher,key=lambda o:float(o['price'])),True,False,'SINGLE_UNIT_REMISE'
+    base=max(offers,key=lambda o:float(o['price']))
+    base_price=float(base['price'] or 0)
+    if base_price>0 and delivered_price>=base_price*1.5:
+        return base,False,True,'HIGH_PRICE_REVIEW'
+    return base,False,False,'UNMATCHED_HIGH_PRICE'
+
+def upsell_values(code,settings,baseprice,price,rate,multi):
+    pct=float(settings['upsell_maroc'] if code=='MAROC' else settings['upsell_africa']) if code=='MAROC' or code in AFRICA_CODES else 0
+    candidate=round(max(0.0,price-baseprice)*pct*rate,4) if multi and baseprice>0 and pct>0 else 0.0
+    return candidate
 
 def add_product_offer(product_id,price,commission,effective_date='',note=''):
     price=float(price);commission=float(commission)
@@ -388,7 +417,7 @@ def add_product_offer(product_id,price,commission,effective_date='',note=''):
 def recalculate_offers(product_id):
     c=db();ds=c.execute('select d.*,m.code market_code from deliveries d join markets m on m.id=d.market_id where d.product_id=?',(product_id,)).fetchall()
     for d in ds:
-        multi=order_is_multi(d['product_raw']);offer,is_remise=match_offer(c,product_id,float(d['price'] or 0),not multi)
+        offer,is_remise,multi,classification=classify_sale(c,product_id,d['product_raw'],float(d['price'] or 0))
         code=d['market_code'];usd=mad=0
         if offer:usd,mad=(0,float(offer['commission'])) if code=='MAROC' else (float(offer['commission']),0)
         c.execute('update deliveries set base_commission_usd=?,base_commission_mad=?,base_price_local=?,commission_rule_id=NULL where id=?',(usd,mad,float(offer['price']) if offer else None,d['id']))
@@ -425,16 +454,17 @@ def import_deliveries(period_id,path,global_file=False):
         if not mid:status.append('UNMAPPED COUNTRY')
         if prod:
             product_id=prod['id'];baseprice=float(prod['price_local'] or 0);localmad=float(prod['local_mad'] or 0)
-            multi=order_is_multi(rawprod);offer,is_remise=match_offer(c,product_id,price,not multi)
+            offer,is_remise,multi,classification=classify_sale(c,product_id,rawprod,price)
+            if classification=='HIGH_PRICE_REVIEW':status.append('INFERRED UPSELL - VERIFY QUANTITY')
             if offer:baseprice=float(offer['price']);base_usd,base_mad=(0,float(offer['commission'])) if code=='MAROC' else (float(offer['commission']),0)
             else:status.append('UNMATCHED OFFER PRICE')
             if code=='MAROC':
                 pct=float(settings['upsell_maroc'])
-                if multi and pct>0 and baseprice>0 and price>baseprice:candidate=(price-baseprice)*pct*localmad
+                if multi and pct>0 and baseprice>0 and price>baseprice:candidate=upsell_values(code,settings,baseprice,price,localmad,multi)
                 paid=candidate;decision='AUTO' if candidate>0 else 'NONE'
             elif code in AFRICA_CODES:
                 pct=float(settings['upsell_africa'])
-                if multi and pct>0 and baseprice>0 and price>baseprice:candidate=(price-baseprice)*pct*localmad
+                if multi and pct>0 and baseprice>0 and price>baseprice:candidate=upsell_values(code,settings,baseprice,price,localmad,multi)
                 if candidate>0:
                     decision=previous.get(norm(tracking),'PENDING');paid=candidate if decision=='APPROVED' else 0.0
             else:
