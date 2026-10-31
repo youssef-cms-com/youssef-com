@@ -258,10 +258,21 @@ def review_page(pid):
     body=f'''<section class="hero"><div><span class="eyebrow">Quality control</span><h1>Review Center</h1><p>Unmatched data is isolated instead of silently affecting commission.</p></div></section><div class="grid3"><div class="panel"><h2>Unmatched buyers</h2><table><tr><th>Source</th><th>Name</th><th class="num">Rows</th></tr>{a}</table></div><div class="panel"><h2>Unknown cities</h2><a class="text-link" href="/cities/{pid}">Manage city mappings →</a><table><tr><th>City</th><th class="num">Rows</th></tr>{b}</table></div><div class="panel"><h2>Missing products/rates</h2><table><tr><th>Product</th><th class="num">Rows</th></tr>{d}</table></div></div>'''
     return page('Review',body,p)
 
-def imports_page(pid):
-    p=period(pid);c=db();hist=c.execute('select * from imports where period_id=? order by id desc',(pid,)).fetchall();c.close();opts=''.join(f'<option value="{code}">{name}</option>' for code,name,_ in MARKETS);trs=''.join(f'<tr><td>{esc(r["created_at"])}</td><td>{esc(r["kind"])}</td><td>{esc(r["market_code"] or "—")}</td><td>{esc(r["filename"])}</td><td class="num">{r["rows_imported"]}</td><td class="num">{r["warnings"]}</td></tr>' for r in hist)
-    body=f'''<section class="hero"><div><span class="eyebrow">Automation</span><h1>Import Center</h1><p>Upload the monthly exports. Country filtering, buyer matching, product linking and calculations run automatically.</p></div></section><div class="grid2"><div class="panel upload-panel"><form method="post" enctype="multipart/form-data"><div class="field"><label>Import type</label><select name="kind" id="import-kind" onchange="document.getElementById('import-market').disabled=this.value==='products';document.getElementById('import-global-note').style.display=this.value==='products'?'block':'none'"><option value="deliveries_maroc">Morocco deliveries</option><option value="deliveries_global">Global deliveries</option><option value="spend">Country spend</option><option value="products">Products / commissions / prices</option></select></div><div class="field"><label>Country (spend only)</label><select name="market" id="import-market">{opts}</select><small id="import-global-note" style="display:none;color:#21866d;margin-top:8px">Global product import: market is read from each Excel row. No country selection required.</small></div><div class="field"><label>Excel file</label><input type="file" name="file" accept=".xlsx"></div><button class="btn">Import & recalculate</button></form></div><div class="panel info-card"><span class="eyebrow">Automatic workflow</span><h2>One upload → complete recalculation</h2><p>Global deliveries are filtered by city. Buyer aliases are matched. Products, commissions, original prices and upsells are linked by market. Bonuses and payout rules then recalculate automatically.</p></div></div><div class="panel"><h2>Import history</h2><div class="table-wrap"><table><tr><th>Time</th><th>Type</th><th>Market</th><th>File</th><th class="num">Rows</th><th class="num">Warnings</th></tr>{trs}</table></div></div>'''
-    return page('Imports',body,p)
+def imports_page(pid,notice=''):
+    p=period(pid);c=db();hist=c.execute('select * from imports where period_id=? order by id desc',(pid,)).fetchall();c.close()
+    opts=''.join(f'<option value="{code}">{name}</option>' for code,name,_ in MARKETS)
+    latest={}
+    for r in hist:
+        key=(r['kind'],r['market_code'] if r['kind']=='SPEND' else None)
+        latest.setdefault(key,r['id'])
+    trs=''
+    for r in hist:
+        kind=r['kind'];key=(kind,r['market_code'] if kind=='SPEND' else None)
+        active=(r['id']==latest[key] and kind in ('DELIVERIES_MAROC','DELIVERIES_GLOBAL','SPEND'))
+        action=(f'<form method="post" action="/imports/remove/{pid}/{r["id"]}" onsubmit="return confirm(\'Remove this import and its active data for this month? This will recalculate commissions and cannot be undone.\')"><button class="btn danger-btn compact-btn" type="submit">Remove</button></form>' if active else '<span class="muted">History only</span>')
+        trs+=f'<tr><td>{esc(r["created_at"])}</td><td>{esc(kind)}</td><td>{esc(r["market_code"] or "—")}</td><td>{esc(r["filename"])}</td><td class="num">{r["rows_imported"]}</td><td class="num">{r["warnings"]}</td><td>{action}</td></tr>'
+    body=f'''<section class="hero"><div><span class="eyebrow">Automation</span><h1>Import Center</h1><p>Upload or replace monthly exports. The latest upload for the same source replaces its active records automatically.</p></div></section>{f'<div class="panel">{esc(notice)}</div>' if notice else ''}<div class="grid2"><div class="panel upload-panel"><form method="post" enctype="multipart/form-data"><div class="field"><label>Import type</label><select name="kind" id="import-kind" onchange="document.getElementById('import-market').disabled=this.value==='products'"><option value="deliveries_maroc">Morocco deliveries</option><option value="deliveries_global">Global deliveries</option><option value="spend">Country spend</option><option value="products">Products / commissions / prices</option></select></div><div class="field"><label>Country (spend only)</label><select name="market" id="import-market">{opts}</select></div><div class="field"><label>Excel file</label><input type="file" name="file" accept=".xlsx" required></div><button class="btn">Upload / Replace file</button></form></div><div class="panel info-card"><h2>Correct a wrong upload</h2><p>Click <strong>Remove</strong> on the latest active import to clear its associated orders or spend for this month, then upload the correct Excel file. You can also upload a corrected file directly to replace the same source.</p><p>Older entries are audit history, not independent datasets. Product-master imports cannot be reversed automatically because they may be shared across months.</p></div></div><div class="panel"><h2>Import history</h2><div class="table-wrap"><table><tr><th>Time</th><th>Type</th><th>Market</th><th>File</th><th class="num">Rows</th><th class="num">Warnings</th><th>Action</th></tr>{trs}</table></div></div>'''
+    return page('Import Center',body,p)
 
 def products_page(pid):
     p=period(pid);c=db();ensure_currency_rates(c)
@@ -515,6 +526,13 @@ class H(BaseHTTPRequestHandler):
             pid=int(path.split('/')[-1]);f=self.form();c=db();c.execute('update settings set maroc_spend_mad=?,other_usd_mad=?,usdt_mad=?,upsell_maroc=?,upsell_africa=?,remise_pct=? where period_id=?',(float(f['maroc_spend_mad']),float(f['other_usd_mad']),float(f['usdt_mad']),float(f['upsell_maroc'])/100,float(f['upsell_africa'])/100,float(f['remise_pct'])/100,pid));c.commit();c.close();return self.redirect(f'/settings/{pid}')
         if path.startswith('/adjustments/'):
             pid=int(path.split('/')[-1]);save_adjustments(pid,self.form());return self.redirect(f'/adjustments/{pid}')
+        if path.startswith('/imports/remove/'):
+            parts=path.strip('/').split('/')
+            try:
+                pid=int(parts[2]);import_id=int(parts[3]);count=remove_import(pid,import_id)
+                return self.out(imports_page(pid,f'Import removed. {count} active rows cleared. Monthly commissions will reflect the change.'))
+            except (ValueError,IndexError) as e:
+                return self.out(imports_page(pid if 'pid' in locals() else period_list()[0]['id'],str(e)),400)
         if path.startswith('/imports/'):
             pid=int(path.split('/')[-1]);n=int(self.headers.get('Content-Length','0'));raw=self.rfile.read(n);ctype=self.headers.get('Content-Type','');msg=BytesParser(policy=default).parsebytes((f'Content-Type: {ctype}\r\nMIME-Version: 1.0\r\n\r\n').encode()+raw);fields={};file_name=None;file_bytes=None
             for part in msg.iter_parts():
