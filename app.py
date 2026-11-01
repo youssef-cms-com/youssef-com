@@ -43,6 +43,10 @@ def init_db(reset=False):
     ''')
     c.executescript("""create table if not exists product_offers(id integer primary key,product_id integer not null,price real not null,commission real not null,effective_date text,note text,created_at text,unique(product_id,price));
     create table if not exists remise_reviews(id integer primary key,delivery_id integer not null unique,period_id integer not null,buyer_id integer,product_id integer,reference_price real,delivered_price real,gap_local real,rate_mad real,gap_mad real,decision text default 'PENDING',decided_at text);""")
+    c.execute('''create table if not exists delivery_market_overrides (
+        id integer primary key, period_id integer not null, source text not null,
+        tracking_key text not null, market_id integer not null, decided_at text,
+        unique(period_id,source,tracking_key))''')
     # Lightweight migrations for users upgrading an existing YOUSSEF.COM database.
     cols={r['name'] for r in c.execute('pragma table_info(deliveries)')}
     for col,ctype in [('delivery_date','text'),('product_id','integer'),('commission_rule_id','integer'),('tracking_number','text'),('upsell_candidate_mad','real default 0'),('upsell_decision',"text default 'NONE'"),('upsell_decided_at','text')]:
@@ -85,10 +89,7 @@ def market_from_city(city,delivery_man='',c=None):
     if own:c.close()
     if r:return r['code']
     if 'expedition' in n:
-        if 'jaabilan' in dm:return 'MALI'
-        if 'digital mobility' in dm:return 'CAMEROUN'
-        if 'eyram' in dm:return 'TOGO'
-        if 'msg' in dm:return 'GABON'
+        return None  # Expedition must be classified per delivery, never by carrier
     return None
 
 def add_city_mapping(city,code):
@@ -278,7 +279,7 @@ def lookup_product(c,mid,raw_name):
     n=norm(raw_name); r=c.execute('select * from products where market_id=? and name_norm=?',(mid,n)).fetchone()
     if r:return r
     # For single-line pack/x2 orders, use the single product as the base item if available.
-    stripped=re.sub(r'\s+x\s*\d+\s*$','',stripped,flags=re.I); sn=norm(stripped)
+    stripped=re.sub(r'\s+x\s*\d+\s*$','',str(raw_name),flags=re.I); sn=norm(stripped)
     if sn!=n:
         r=c.execute('select * from products where market_id=? and name_norm=?',(mid,sn)).fetchone()
         if r:return r
@@ -447,7 +448,10 @@ def import_deliveries(period_id,path,global_file=False):
     for rn,r in enumerate(it,2):
         if str(r[ix.get('Delivery',-1)] or '').strip().lower()!='delivered':continue
         delivery_date=parse_delivery_date(r[ix.get('Date',2)] if 'Date' in ix else None)
-        rawbuyer=r[ix.get('Sales Channel',3)];tracking=str(r[ix.get('Tracking Number',4)] or '') if 'Tracking Number' in ix else '';bid=find_buyer(c,rawbuyer);city=r[ix.get('City',13)] if 'City' in ix else '';dm=r[ix.get('Delivery Man',17)] if 'Delivery Man' in ix else '';code=market_from_city(city,dm,c) if global_file else 'MAROC';mid=market_id(c,code) if code else None; rawprod=str(r[ix.get('Products',6)] or '');bp=base_product_name(rawprod); prod=lookup_product(c,mid,bp) if mid else None
+        rawbuyer=r[ix.get('Sales Channel',3)];tracking=str(r[ix.get('Tracking Number',4)] or '') if 'Tracking Number' in ix else '';bid=find_buyer(c,rawbuyer);city=r[ix.get('City',13)] if 'City' in ix else '';dm=r[ix.get('Delivery Man',17)] if 'Delivery Man' in ix else '';code=market_from_city(city,dm,c) if global_file else 'MAROC';
+        override=c.execute('select m.code from delivery_market_overrides o join markets m on m.id=o.market_id where o.period_id=? and o.source=? and o.tracking_key=?',(period_id,src,norm(tracking))).fetchone() if tracking else None
+        if override:code=override['code']
+        mid=market_id(c,code) if code else None; rawprod=str(r[ix.get('Products',6)] or '');bp=base_product_name(rawprod); prod=lookup_product(c,mid,bp) if mid else None
         is_remise=False;price=float(r[ix.get('Price',7)] or 0); paid=0.0;candidate=0.0;decision='NONE'; base_usd=base_mad=baseprice=localmad=0.0; rule_id=None; product_id=None; status=[]
         if not delivery_date:status.append('MISSING DELIVERY DATE')
         if not bid:status.append('UNMATCHED BUYER')
@@ -617,6 +621,13 @@ def reconcile_unmatched_buyers(buyer_id=None):
                 if key and key!='manual' and key in mapping:
                     c.execute(f'update {table} set buyer_id=? where id=? and buyer_id is null',(mapping[key],r['id']))
                     result[table]+=1
+        for d in c.execute('select d.id,d.period_id,d.buyer_id,d.product_id,d.product_raw,d.price,d.base_price_local,d.local_mad from deliveries d where d.buyer_id is not null and d.product_id is not null and not exists(select 1 from remise_reviews r where r.delivery_id=d.id)').fetchall():
+            offer,is_remise,multi,_=classify_sale(c,d['product_id'],d['product_raw'],float(d['price'] or 0))
+            if is_remise and not multi and offer:
+                gap=float(offer['price'])-float(d['price'] or 0)
+                c.execute('insert or ignore into remise_reviews(delivery_id,period_id,buyer_id,product_id,reference_price,delivered_price,gap_local,rate_mad,gap_mad,decision) values(?,?,?,?,?,?,?,?,?,?)',(d['id'],d['period_id'],d['buyer_id'],d['product_id'],float(offer['price']),float(d['price'] or 0),gap,float(d['local_mad'] or 0),gap*float(d['local_mad'] or 0),'PENDING'))
+        c.execute('update remise_reviews set buyer_id=(select d.buyer_id from deliveries d where d.id=delivery_id) where buyer_id is null')
+        c.execute("update deliveries set status=replace(replace(status, 'UNMATCHED BUYER, ', ''), 'UNMATCHED BUYER', 'OK') where buyer_id is not null and status like '%UNMATCHED BUYER%'")
         c.commit()
         return result
     except Exception:
@@ -708,3 +719,74 @@ def update_product_conversion(product_id,rate):
     rate=float(rate)
     if rate<=0:raise ValueError('Conversion must be positive')
     c=db();c.execute('update products set local_mad=? where id=?',(rate,product_id));c.commit();c.close();recalculate_offers(product_id)
+
+
+def assign_buyer_alias(period_id,raw_name,buyer_id):
+    """Manual review mapping; updates only unassigned records, across all periods."""
+    raw_name=str(raw_name or '').strip(); key=norm(raw_name)
+    if not key or key=='manual':raise ValueError('A valid source name is required')
+    c=db()
+    try:
+        if not c.execute('select 1 from buyers where id=?',(buyer_id,)).fetchone():raise ValueError('Buyer not found')
+        old=c.execute('select buyer_id from aliases where alias_norm=?',(key,)).fetchone()
+        if old and old['buyer_id']!=buyer_id:raise ValueError('Alias already belongs to another buyer')
+        named=c.execute('select id from buyers where name_norm=?',(key,)).fetchone()
+        if named and named['id']!=buyer_id:raise ValueError('This is the official name of another buyer')
+        c.execute('insert or ignore into aliases(buyer_id,alias,alias_norm) values(?,?,?)',(buyer_id,raw_name,key))
+        c.commit()
+    finally:c.close()
+    return reconcile_unmatched_buyers(buyer_id)
+
+
+def expedition_review_rows(period_id):
+    c=db()
+    rows=c.execute("""select d.id,d.source,d.source_row,d.tracking_number,d.order_id,d.buyer_raw,
+        d.city,d.product_raw,d.price,d.delivery_date,d.market_id,m.name market_name
+        from deliveries d left join markets m on m.id=d.market_id
+        where d.period_id=? and d.source='GLOBAL' and lower(d.city) like '%exp%dition%'
+        order by (d.market_id is null) desc,d.id""",(period_id,)).fetchall()
+    c.close();return [dict(r) for r in rows]
+
+
+def assign_delivery_country(period_id,delivery_id,market_code):
+    """One tracking-specific override; never creates a global city mapping."""
+    c=db()
+    try:
+        d=c.execute('select * from deliveries where id=? and period_id=? and source="GLOBAL"',(delivery_id,period_id)).fetchone()
+        if not d:raise ValueError('Delivery not found in this period')
+        if 'expedition' not in norm(d['city']):raise ValueError('Only Expedition rows can be assigned here')
+        mid=market_id(c,market_code)
+        if not mid:raise ValueError('Invalid country')
+        key=norm(d['tracking_number'])
+        if not key:raise ValueError('Tracking number required for persistent override')
+        collision=c.execute('select count(*) n from deliveries where period_id=? and source="GLOBAL" and tracking_number=?',(period_id,d['tracking_number'])).fetchone()['n']
+        if collision!=1:raise ValueError('Tracking number is not unique; cannot safely save override')
+        c.execute('insert into delivery_market_overrides(period_id,source,tracking_key,market_id,decided_at) values(?,?,?,?,?) on conflict(period_id,source,tracking_key) do update set market_id=excluded.market_id,decided_at=excluded.decided_at',(period_id,'GLOBAL',key,mid,datetime.now().isoformat(timespec='seconds')))
+        prod=lookup_product(c,mid,base_product_name(d['product_raw'] or ''))
+        code=market_code; usd=mad=baseprice=rate=candidate=paid=0.0;decision='NONE';pid=None
+        status=[v.strip() for v in str(d['status'] or '').split(',') if v.strip() not in ('OK','UNMAPPED COUNTRY','MISSING PRODUCT/RATE','UNMATCHED OFFER PRICE','INFERRED UPSELL - VERIFY QUANTITY')]
+        if prod:
+            pid=prod['id'];rate=float(prod['local_mad'] or 0)
+            offer,remise,multi,classification=classify_sale(c,pid,d['product_raw'] or '',float(d['price'] or 0))
+            if offer:
+                baseprice=float(offer['price']);usd,mad=(0,float(offer['commission'])) if code=='MAROC' else (float(offer['commission']),0)
+            else:status.append('UNMATCHED OFFER PRICE')
+            if classification=='HIGH_PRICE_REVIEW':status.append('INFERRED UPSELL - VERIFY QUANTITY')
+            settings=c.execute('select * from settings where period_id=?',(period_id,)).fetchone()
+            candidate=upsell_values(code,settings,baseprice,float(d['price'] or 0),rate,multi)
+            if candidate and code in AFRICA_CODES:
+                decision=d['upsell_decision'] if d['upsell_decision'] in ('APPROVED','REJECTED') else 'PENDING'
+                paid=candidate if decision=='APPROVED' else 0
+            elif candidate and code=='MAROC':decision='AUTO';paid=candidate
+            if remise and not multi and offer and d['buyer_id']:
+                gap=baseprice-float(d['price'] or 0)
+                c.execute("""insert into remise_reviews(delivery_id,period_id,buyer_id,product_id,reference_price,delivered_price,gap_local,rate_mad,gap_mad,decision)
+                    values(?,?,?,?,?,?,?,?,?,'PENDING') on conflict(delivery_id) do update set buyer_id=excluded.buyer_id,product_id=excluded.product_id,reference_price=excluded.reference_price,delivered_price=excluded.delivered_price,gap_local=excluded.gap_local,rate_mad=excluded.rate_mad,gap_mad=excluded.gap_mad,decision=case when remise_reviews.reference_price=excluded.reference_price and remise_reviews.delivered_price=excluded.delivered_price then remise_reviews.decision else 'PENDING' end""",(delivery_id,period_id,d['buyer_id'],pid,baseprice,float(d['price'] or 0),gap,rate,round(gap*rate,4)))
+            else:c.execute('delete from remise_reviews where delivery_id=?',(delivery_id,))
+        else:
+            status.append('MISSING PRODUCT/RATE');c.execute('delete from remise_reviews where delivery_id=?',(delivery_id,))
+        c.execute("""update deliveries set market_id=?,product_id=?,commission_rule_id=NULL,base_commission_usd=?,base_commission_mad=?,base_price_local=?,local_mad=?,upsell_candidate_mad=?,upsell_mad=?,upsell_decision=?,status=? where id=?""",(mid,pid,usd,mad,baseprice,rate,candidate,paid,decision,', '.join(dict.fromkeys(status)) or 'OK',delivery_id))
+        c.commit()
+    except Exception:
+        c.rollback();raise
+    finally:c.close()
