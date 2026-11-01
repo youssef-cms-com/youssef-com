@@ -278,7 +278,7 @@ def lookup_product(c,mid,raw_name):
     n=norm(raw_name); r=c.execute('select * from products where market_id=? and name_norm=?',(mid,n)).fetchone()
     if r:return r
     # For single-line pack/x2 orders, use the single product as the base item if available.
-    stripped=re.sub(r'\s+x\s*\d+\s*$','',str(raw_name or ''),flags=re.I); sn=norm(stripped)
+    stripped=re.sub(r'\s+x\s*\d+\s*$','',stripped,flags=re.I); sn=norm(stripped)
     if sn!=n:
         r=c.execute('select * from products where market_id=? and name_norm=?',(mid,sn)).fetchone()
         if r:return r
@@ -476,38 +476,6 @@ def import_deliveries(period_id,path,global_file=False):
         n+=1;w+=1 if status else 0
     c.execute('insert into imports(period_id,kind,filename,rows_imported,warnings,created_at) values(?,?,?,?,?,?)',(period_id,'DELIVERIES_'+src,Path(path).name,n,w,datetime.now().isoformat(timespec='seconds')));c.commit();c.close();return n,w
 
-def remove_import(period_id, import_id):
-    """Remove the active latest import for its exact month and source, atomically."""
-    c=db()
-    try:
-        c.execute('BEGIN IMMEDIATE')
-        row=c.execute('select * from imports where id=? and period_id=?',(import_id,period_id)).fetchone()
-        if not row:raise ValueError('Import not found in this month')
-        kind=row['kind']; code=row['market_code']
-        if kind not in ('DELIVERIES_MAROC','DELIVERIES_GLOBAL','SPEND'):
-            raise ValueError('This import cannot be safely removed automatically')
-        if kind=='SPEND' and not code:raise ValueError('Missing country: cannot safely remove')
-        if kind=='SPEND':
-            latest=c.execute('select max(id) from imports where period_id=? and kind=? and market_code=?',(period_id,kind,code)).fetchone()[0]
-            mid=market_id(c,code)
-            if mid is None:raise ValueError('Unknown country')
-            count=c.execute('select count(*) from spend where period_id=? and market_id=?',(period_id,mid)).fetchone()[0]
-        else:
-            latest=c.execute('select max(id) from imports where period_id=? and kind=?',(period_id,kind)).fetchone()[0]
-            source=kind.removeprefix('DELIVERIES_')
-            count=c.execute('select count(*) from deliveries where period_id=? and source=?',(period_id,source)).fetchone()[0]
-        if latest!=import_id:raise ValueError('Only the latest import for this source can be removed. Older entries are historical logs.')
-        if kind=='SPEND':
-            c.execute('delete from spend where period_id=? and market_id=?',(period_id,mid))
-        else:
-            c.execute('delete from remise_reviews where delivery_id in (select id from deliveries where period_id=? and source=?)',(period_id,source))
-            c.execute('delete from deliveries where period_id=? and source=?',(period_id,source))
-        c.execute('delete from imports where id=?',(import_id,))
-        c.commit();return count
-    except Exception:
-        c.rollback();raise
-    finally:c.close()
-
 def import_spend(period_id,path,code):
     wb=load_workbook(path,read_only=True,data_only=True);ws=wb.active;it=ws.iter_rows(values_only=True);hdr=[str(x or '').strip() for x in next(it)];ix={h:i for i,h in enumerate(hdr)};c=db();mid=market_id(c,code);c.execute('delete from spend where period_id=? and market_id=?',(period_id,mid));n=w=0
     def num(r,k):
@@ -628,6 +596,36 @@ def export_summary(pid,path):
     wb.save(path)
 
 
+def reconcile_unmatched_buyers(buyer_id=None):
+    """Link already imported delivery/spend rows to newly registered buyer names/aliases.
+
+    Only NULL buyer IDs are updated. Existing assignments, prices, decisions,
+    imports, and adjustments remain untouched.
+    """
+    c=db()
+    try:
+        buyers=c.execute('select id,name_norm from buyers where id=?',(buyer_id,)).fetchall() if buyer_id is not None else c.execute('select id,name_norm from buyers').fetchall()
+        mapping={}
+        for b in buyers:
+            mapping[b['name_norm']]=b['id']
+            for a in c.execute('select alias_norm from aliases where buyer_id=?',(b['id'],)):
+                mapping[a['alias_norm']]=b['id']
+        result={'deliveries':0,'spend':0}
+        for table in ('deliveries','spend'):
+            for r in c.execute(f'select id,buyer_raw from {table} where buyer_id is null').fetchall():
+                key=norm(r['buyer_raw'])
+                if key and key!='manual' and key in mapping:
+                    c.execute(f'update {table} set buyer_id=? where id=? and buyer_id is null',(mapping[key],r['id']))
+                    result[table]+=1
+        c.commit()
+        return result
+    except Exception:
+        c.rollback()
+        raise
+    finally:
+        c.close()
+
+
 def add_buyer(name,status="CURRENT",aliases=None):
     name=str(name or '').strip()
     if not name: raise ValueError('Media buyer name is required')
@@ -637,7 +635,9 @@ def add_buyer(name,status="CURRENT",aliases=None):
     for alias in aliases or []:
         alias=str(alias or '').strip()
         if alias:c.execute('insert or ignore into aliases(buyer_id,alias,alias_norm) values(?,?,?)',(bid,alias,norm(alias)))
-    c.commit();c.close();return bid
+    c.commit();c.close()
+    reconcile_unmatched_buyers(bid)
+    return bid
 
 def add_product(name,market_code,commission_value,price_local,local_mad):
     name=str(name or '').strip()
