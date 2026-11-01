@@ -1,19 +1,9 @@
-YOUSSEF.COM - Review Center Fix (testing build)
+YOUSSEF.COM Upsell Rebuild v2 - testing build
 
-Files: app.py and server.py. Replace BOTH files from the same deployment revision.
-Back up the persistent SQLite database before deploying. Never replace /data/youssef.db.
+1. BACK UP Railway persistent SQLite database first.
+2. Deploy app.py and server.py together from this ZIP. Do not replace database.
+3. Open African Upsells, click Preview detection, inspect counts.
+4. Click Apply rebuild to update existing month; Africa approvals/rejections retained.
+5. Check dashboard Morocco paid upsells and Africa pending candidates.
 
-New behavior:
-- Review Center: assign unmatched source buyer names to existing media buyers.
-- Saved aliases recover previously unmatched deliveries and spend across periods.
-- Expedition: assign each delivery by tracking number, without a blanket city mapping.
-- Override persists across subsequent Global delivery imports for the same period/tracking.
-- Affected delivery's product, base commission, upsell and remise are recalculated.
-
-Verification: Python compilation and a synthetic SQLite test passed.
-NOT tested against your live Railway database or all real exports. Do not deploy without
-backing up your database and validating payout totals on a staging copy.
-
-Known limitation: deliveries without a unique tracking number cannot be safely
-persistently overridden. Existing manually configured global city mapping for
-Expedition should be removed if present.
+Important: A 0 rate for a market with no configured currency conversion is not guessed. Such rows remain unchanged. The tool does not change base commissions or remise approvals. Not tested on live Railway database.

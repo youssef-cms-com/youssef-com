@@ -121,7 +121,7 @@ def recalculate_city_deliveries(city):
             if offer:base_usd,base_mad=(0,float(offer['commission'])) if code=='MAROC' else (float(offer['commission']),0)
             else:parts.append('UNMATCHED OFFER PRICE')
             st=c.execute('select * from settings where period_id=?',(d['period_id'],)).fetchone()
-            candidate=upsell_values(code,st,baseprice,float(d['price'] or 0),localmad,multi)
+            candidate=upsell_values(code,st,baseprice,float(d['price'] or 0),effective_price_rate(c,code,localmad),multi)
             if candidate>0 and code in AFRICA_CODES:
                 old=(d['upsell_decision'] or '').upper();decision=old if old in ('APPROVED','REJECTED') else 'PENDING';paid=candidate if decision=='APPROVED' else 0.0
             elif candidate>0 and code=='MAROC':decision='AUTO';paid=candidate
@@ -402,6 +402,16 @@ def classify_sale(c, product_id, raw, delivered_price):
         return base,False,True,'HIGH_PRICE_REVIEW'
     return base,False,False,'UNMATCHED_HIGH_PRICE'
 
+def effective_price_rate(c, code, product_rate):
+    """Convert local selling-price difference to MAD, without changing base commission currency."""
+    if code=='MAROC':return 1.0
+    rate=float(product_rate or 0)
+    if rate>0:return rate
+    ensure_currency_rates(c)
+    cur=MARKET_CURRENCY.get(code)
+    row=c.execute('select mad_rate from currency_rates where currency=?',(cur,)).fetchone()
+    return float(row['mad_rate'] or 0) if row else 0.0
+
 def upsell_values(code,settings,baseprice,price,rate,multi):
     pct=float(settings['upsell_maroc'] if code=='MAROC' else settings['upsell_africa']) if code=='MAROC' or code in AFRICA_CODES else 0
     candidate=round(max(0.0,price-baseprice)*pct*rate,4) if multi and baseprice>0 and pct>0 else 0.0
@@ -464,11 +474,11 @@ def import_deliveries(period_id,path,global_file=False):
             else:status.append('UNMATCHED OFFER PRICE')
             if code=='MAROC':
                 pct=float(settings['upsell_maroc'])
-                if multi and pct>0 and baseprice>0 and price>baseprice:candidate=upsell_values(code,settings,baseprice,price,localmad,multi)
+                if multi and pct>0 and baseprice>0 and price>baseprice:candidate=upsell_values(code,settings,baseprice,price,effective_price_rate(c,code,localmad),multi)
                 paid=candidate;decision='AUTO' if candidate>0 else 'NONE'
             elif code in AFRICA_CODES:
                 pct=float(settings['upsell_africa'])
-                if multi and pct>0 and baseprice>0 and price>baseprice:candidate=upsell_values(code,settings,baseprice,price,localmad,multi)
+                if multi and pct>0 and baseprice>0 and price>baseprice:candidate=upsell_values(code,settings,baseprice,price,effective_price_rate(c,code,localmad),multi)
                 if candidate>0:
                     decision=previous.get(norm(tracking),'PENDING');paid=candidate if decision=='APPROVED' else 0.0
             else:
@@ -789,4 +799,50 @@ def assign_delivery_country(period_id,delivery_id,market_code):
         c.commit()
     except Exception:
         c.rollback();raise
+    finally:c.close()
+
+
+def rebuild_period_upsells(period_id, apply=False):
+    # Recalculate existing upsells while preserving African decisions and base commissions.
+    c=db()
+    try:
+        st=c.execute('select * from settings where period_id=?',(period_id,)).fetchone()
+        if st is None:raise ValueError('Period settings missing')
+        rows=c.execute('''select d.*,m.code market_code,p.local_mad product_rate
+            from deliveries d left join markets m on m.id=d.market_id
+            left join products p on p.id=d.product_id where d.period_id=?''',(period_id,)).fetchall()
+        report={'total':len(rows),'candidates':0,'africa':0,'morocco':0,'missing_product':0,'missing_rate':0,'changed':0,'africa_pending':0,'morocco_auto_mad':0.0,'africa_potential_mad':0.0}
+        if apply:c.execute('begin immediate')
+        for d in rows:
+            code=d['market_code']
+            if code not in AFRICA_CODES and code!='MAROC':continue
+            if not d['product_id']:
+                report['missing_product']+=1;continue
+            rate=effective_price_rate(c,code,d['product_rate'])
+            if rate<=0:
+                report['missing_rate']+=1;continue
+            offer,is_remise,multi,reason=classify_sale(c,d['product_id'],d['product_raw'],float(d['price'] or 0))
+            if not offer:continue
+            base=float(offer['price'] or 0)
+            candidate=upsell_values(code,st,base,float(d['price'] or 0),rate,multi)
+            old_dec=(d['upsell_decision'] or 'NONE').upper()
+            if candidate>0:
+                report['candidates']+=1
+                if code=='MAROC':report['morocco']+=1;report['morocco_auto_mad']+=candidate
+                else:report['africa']+=1;report['africa_potential_mad']+=candidate
+            if code=='MAROC':decision='AUTO' if candidate>0 else 'NONE';paid=candidate
+            elif candidate>0:
+                decision=old_dec if old_dec in ('APPROVED','REJECTED') else 'PENDING'
+                paid=candidate if decision=='APPROVED' else 0.0
+                if decision=='PENDING':report['africa_pending']+=1
+            else:decision='NONE';paid=0.0
+            if abs(float(d['upsell_candidate_mad'] or 0)-candidate)>.0001 or abs(float(d['upsell_mad'] or 0)-paid)>.0001 or old_dec!=decision:
+                report['changed']+=1
+                if apply:
+                    c.execute('''update deliveries set upsell_candidate_mad=?,upsell_mad=?,upsell_decision=?,base_price_local=? where id=?''',(candidate,paid,decision,base,d['id']))
+        if apply:c.commit()
+        return report
+    except Exception:
+        if apply:c.rollback()
+        raise
     finally:c.close()
