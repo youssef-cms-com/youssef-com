@@ -425,18 +425,64 @@ def add_product_offer(product_id,price,commission,effective_date='',note=''):
     c=db();c.execute('insert into product_offers(product_id,price,commission,effective_date,note,created_at) values(?,?,?,?,?,?) on conflict(product_id,price) do update set commission=excluded.commission,effective_date=excluded.effective_date,note=excluded.note',(product_id,price,commission,date,note,datetime.now().isoformat(timespec='seconds')));c.commit();c.close()
     recalculate_offers(product_id)
 
-def recalculate_offers(product_id):
-    c=db();ds=c.execute('select d.*,m.code market_code from deliveries d join markets m on m.id=d.market_id where d.product_id=?',(product_id,)).fetchall()
-    for d in ds:
-        offer,is_remise,multi,classification=classify_sale(c,product_id,d['product_raw'],float(d['price'] or 0))
-        code=d['market_code'];usd=mad=0
-        if offer:usd,mad=(0,float(offer['commission'])) if code=='MAROC' else (float(offer['commission']),0)
-        c.execute('update deliveries set base_commission_usd=?,base_commission_mad=?,base_price_local=?,commission_rule_id=NULL where id=?',(usd,mad,float(offer['price']) if offer else None,d['id']))
-        if is_remise and offer and d['buyer_id']:
-            p=c.execute('select local_mad from products where id=?',(product_id,)).fetchone();rate=float(p['local_mad'] or 0);gap=round(float(offer['price'])-float(d['price']),4)
-            c.execute("""insert into remise_reviews(delivery_id,period_id,buyer_id,product_id,reference_price,delivered_price,gap_local,rate_mad,gap_mad,decision) values(?,?,?,?,?,?,?,?,?,'PENDING') on conflict(delivery_id) do update set reference_price=excluded.reference_price,delivered_price=excluded.delivered_price,gap_local=excluded.gap_local,rate_mad=excluded.rate_mad,gap_mad=excluded.gap_mad,decision=case when remise_reviews.reference_price=excluded.reference_price and remise_reviews.delivered_price=excluded.delivered_price and remise_reviews.rate_mad=excluded.rate_mad then remise_reviews.decision else 'PENDING' end""",(d['id'],d['period_id'],d['buyer_id'],product_id,float(offer['price']),float(d['price']),gap,rate,round(gap*rate,4)))
-        else:c.execute('delete from remise_reviews where delivery_id=?',(d['id'],))
-    c.commit();c.close()
+def recalculate_offers(product_id, preview=False):
+    """Synchronize all imported deliveries for a product, preserving financial review history.
+
+    A newly exact-matching offer removes a false upsell/remise; approved decisions
+    are archived before being superseded. All changes commit atomically.
+    """
+    c=db()
+    report={'orders':0,'changed':0,'upsells_cleared':0,'remises_cleared':0,'upsells_detected':0,'remises_detected':0}
+    try:
+        c.execute("""create table if not exists offer_recalc_audit(
+            id integer primary key,delivery_id integer,product_id integer,period_id integer,
+            tracking_number text,old_base_usd real,old_base_mad real,new_base_usd real,new_base_mad real,
+            old_upsell_mad real,new_upsell_mad real,old_upsell_decision text,new_upsell_decision text,
+            old_remise_decision text,new_remise_decision text,created_at text)""")
+        if not preview:c.execute('begin immediate')
+        ds=c.execute("""select d.*,m.code market_code,p.local_mad product_rate
+            from deliveries d join markets m on m.id=d.market_id
+            join products p on p.id=d.product_id where d.product_id=?""",(product_id,)).fetchall()
+        for d in ds:
+            report['orders']+=1
+            code=d['market_code'];price=float(d['price'] or 0)
+            offer,is_remise,multi,classification=classify_sale(c,product_id,d['product_raw'],price)
+            if not offer:continue
+            base=float(offer['price']);usd,mad=(0.0,float(offer['commission'])) if code=='MAROC' else (float(offer['commission']),0.0)
+            st=c.execute('select * from settings where period_id=?',(d['period_id'],)).fetchone()
+            rate=effective_price_rate(c,code,d['product_rate'])
+            candidate=upsell_values(code,st,base,price,rate,multi) if st and rate>0 else 0.0
+            old_dec=(d['upsell_decision'] or 'NONE').upper()
+            if candidate>0 and code=='MAROC':decision='AUTO';paid=candidate
+            elif candidate>0 and code in AFRICA_CODES:
+                decision=old_dec if old_dec in ('APPROVED','REJECTED') else 'PENDING'
+                paid=candidate if decision=='APPROVED' else 0.0
+            else:decision='NONE';paid=0.0
+            old_r=c.execute('select * from remise_reviews where delivery_id=?',(d['id'],)).fetchone()
+            new_remise=bool(is_remise and not multi and d['buyer_id'] and base>price)
+            old_remise_dec=old_r['decision'] if old_r else None
+            new_remise_dec=(old_remise_dec if old_r and new_remise and abs(float(old_r['reference_price'])-base)<.005 and abs(float(old_r['delivered_price'])-price)<.005 and abs(float(old_r['rate_mad'])-rate)<.00001 else 'PENDING') if new_remise else None
+            changed=(abs(float(d['base_commission_usd'] or 0)-usd)>.0001 or abs(float(d['base_commission_mad'] or 0)-mad)>.0001 or abs(float(d['upsell_candidate_mad'] or 0)-candidate)>.0001 or abs(float(d['upsell_mad'] or 0)-paid)>.0001 or old_dec!=decision or abs(float(d['base_price_local'] or 0)-base)>.0001 or bool(old_r)!=new_remise or (old_r and new_remise and (abs(float(old_r['reference_price'])-base)>.005 or abs(float(old_r['gap_mad'])-(base-price)*rate)>.0001)))
+            if not changed:continue
+            report['changed']+=1
+            if float(d['upsell_candidate_mad'] or 0)>0 and candidate==0:report['upsells_cleared']+=1
+            if old_r and not new_remise:report['remises_cleared']+=1
+            if candidate>0 and not float(d['upsell_candidate_mad'] or 0):report['upsells_detected']+=1
+            if new_remise and not old_r:report['remises_detected']+=1
+            if preview:continue
+            c.execute("""insert into offer_recalc_audit(delivery_id,product_id,period_id,tracking_number,old_base_usd,old_base_mad,new_base_usd,new_base_mad,old_upsell_mad,new_upsell_mad,old_upsell_decision,new_upsell_decision,old_remise_decision,new_remise_decision,created_at) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",(d['id'],product_id,d['period_id'],d['tracking_number'],d['base_commission_usd'],d['base_commission_mad'],usd,mad,d['upsell_mad'],paid,old_dec,decision,old_remise_dec,new_remise_dec,datetime.now().isoformat(timespec='seconds')))
+            status=[x.strip() for x in str(d['status'] or '').split(',') if x.strip() and x.strip() not in ('INFERRED UPSELL - VERIFY QUANTITY','UNMATCHED OFFER PRICE','OK')]
+            if classification=='HIGH_PRICE_REVIEW':status.append('INFERRED UPSELL - VERIFY QUANTITY')
+            c.execute("""update deliveries set base_commission_usd=?,base_commission_mad=?,base_price_local=?,local_mad=?,upsell_candidate_mad=?,upsell_mad=?,upsell_decision=?,commission_rule_id=NULL,status=? where id=?""",(usd,mad,base,rate,candidate,paid,decision,', '.join(dict.fromkeys(status)) or 'OK',d['id']))
+            if new_remise:
+                gap=round(base-price,4)
+                c.execute("""insert into remise_reviews(delivery_id,period_id,buyer_id,product_id,reference_price,delivered_price,gap_local,rate_mad,gap_mad,decision) values(?,?,?,?,?,?,?,?,?,?) on conflict(delivery_id) do update set buyer_id=excluded.buyer_id,product_id=excluded.product_id,reference_price=excluded.reference_price,delivered_price=excluded.delivered_price,gap_local=excluded.gap_local,rate_mad=excluded.rate_mad,gap_mad=excluded.gap_mad,decision=excluded.decision""",(d['id'],d['period_id'],d['buyer_id'],product_id,base,price,gap,rate,round(gap*rate,4),new_remise_dec))
+            else:c.execute('delete from remise_reviews where delivery_id=?',(d['id'],))
+        if not preview:c.commit()
+        return report
+    except Exception:
+        c.rollback();raise
+    finally:c.close()
 
 def remise_rows(period_id):
     c=db();rows=c.execute("""select r.*,d.tracking_number,d.delivery_date,d.product_raw,b.name buyer,p.name product,m.code market from remise_reviews r join deliveries d on d.id=r.delivery_id join buyers b on b.id=r.buyer_id join products p on p.id=r.product_id join markets m on m.id=d.market_id where r.period_id=? order by r.decision desc,r.id desc""",(period_id,)).fetchall();c.close();return [dict(r) for r in rows]
@@ -723,7 +769,7 @@ def edit_product_info(product_id,name,price,commission):
         c.commit()
     except Exception:c.rollback();raise
     finally:c.close()
-    # Intentionally do not recalculate historical deliveries on edits.
+    recalculate_offers(product_id)  # Synchronize affected imported orders and reviews.
 
 def update_product_conversion(product_id,rate):
     rate=float(rate)
