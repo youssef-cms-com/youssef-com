@@ -278,7 +278,7 @@ def lookup_product(c,mid,raw_name):
     n=norm(raw_name); r=c.execute('select * from products where market_id=? and name_norm=?',(mid,n)).fetchone()
     if r:return r
     # For single-line pack/x2 orders, use the single product as the base item if available.
-    stripped=re.sub(r'\s+x\s*\d+\s*$','',stripped,flags=re.I); sn=norm(stripped)
+    stripped=re.sub(r'\s+x\s*\d+\s*$','',str(raw_name or ''),flags=re.I); sn=norm(stripped)
     if sn!=n:
         r=c.execute('select * from products where market_id=? and name_norm=?',(mid,sn)).fetchone()
         if r:return r
