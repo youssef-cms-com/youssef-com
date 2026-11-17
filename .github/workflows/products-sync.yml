@@ -1,0 +1,36 @@
+
+name: Install YOUSSEF.COM Products Sync
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  install-sync:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Apply synchronization patch
+        run: python apply_youssef_products_sync.py
+
+      - name: Verify Python syntax
+        run: python -m py_compile app.py server.py
+
+      - name: Create update branch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b feature/products-sync
+          git add app.py server.py
+          git commit -m "Add Products Sync Calculations feature"
+          git push origin feature/products-sync
