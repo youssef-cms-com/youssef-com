@@ -276,6 +276,15 @@ def products_page(pid):
     currency_fields=''.join(f'<label style="display:flex;flex-direction:column;gap:5px;min-width:125px;flex:1"><strong>{esc(r["currency"])} → MAD</strong><input type="number" step="0.000001" min="0.000001" name="rate_{esc(r["currency"])}" value="{r["mad_rate"] if r["mad_rate"] is not None else ""}" placeholder="Not configured" {"readonly" if r["currency"]=="MAD" else ""}></label>' for r in rates)
     trs=''.join(f"""<tr data-search='{esc((r['name']+' '+r['market']+' '+r['market_code']).lower())}' data-market='{esc(r['market_code'])}'><td>{esc(r['market'])}</td><td><strong>{esc(r['name'])}</strong></td><td>{esc(MARKET_CURRENCY.get(r['market_code'],'USD'))}</td><td class='num'>{money(r['price_local'])}</td><td class='num'>{money(r['commission_mad'] if r['market_code']=='MAROC' else r['commission_usd'])}</td><td>{r['offer_count']} offers</td><td><details><summary class='btn secondary compact-btn' style='cursor:pointer'>Edit product</summary><form method='post' action='/product-edit/{pid}/{r['id']}' style='display:grid;gap:6px;min-width:220px;margin-top:8px'><input name='name' value='{esc(r['name'])}' required><label>Base price<input name='price' type='number' step='0.01' min='0.01' value='{r['price_local']}' required></label><label>Base commission<input name='commission' type='number' step='0.01' min='0' value='{r['commission_mad'] if r['market_code']=='MAROC' else r['commission_usd']}' required></label><button class='btn'>Save & sync deliveries</button></form></details> <a class='btn secondary compact-btn' href='/offers/{pid}/{r['id']}'>+ Add offer</a></td></tr>""" for r in rs)
     body=f"""<section class='hero'><div><span class='eyebrow'>Master data</span><h1>Products & Offers</h1><p>Search and edit products, manage selling-price offers, and configure currency rates centrally. Offer dates are informational.</p></div></section>
+    <div class='panel' style='border:1px solid #cfe3ee;background:linear-gradient(120deg,#f5f9ff,#f2fcf9)'>
+      <div class='panel-head' style='flex-wrap:wrap'>
+        <div><span class='eyebrow'>Commission reconciliation</span><h2>Sync Calculations</h2>
+          <p class='muted' style='margin:8px 0 0'>After updating product prices, commissions, offers or currency rates, refresh imported deliveries and the calculated buyer dashboards across all months.</p></div>
+        <form method='post' action='/products-sync/{pid}' onsubmit="return confirm('Recalculate all product-linked deliveries across every month? Historical review changes will be audited.')">
+          <button class='btn' type='submit'>↻ Sync Calculations</button>
+        </form>
+      </div>
+    </div>
     <div class='panel'><div class='panel-head'><div><span class='eyebrow'>Global settings</span><h2>Currency conversions to MAD</h2></div></div><p class='muted'>One rate per currency, shared across products. Blank rates require configuration. Changing rates does not automatically recalculate historical deliveries.</p><form method='post' action='/currency-rates/{pid}'><div style='display:flex;flex-wrap:wrap;gap:14px;margin:15px 0'>{currency_fields}</div><button class='btn'>Save currency rates</button></form></div>
     <div class='panel add-panel'><div><h2>Add product</h2><p class='muted'>Create a product with its first price/commission offer. Currency rates are managed above.</p></div><form method='post' action='/products/{pid}' class='product-form'><input name='name' placeholder='Product name' required><select name='market'>{opts}</select><input name='commission' type='number' step='0.01' placeholder='Initial commission' required><input name='price' type='number' step='0.01' placeholder='Selling price' required><button class='btn'>+ Save product</button></form></div>
     <div class='panel'><div class='panel-head'><div><span class='eyebrow'>Commission master</span><h2>All products ({len(rs)})</h2></div></div><div style='display:flex;gap:12px;flex-wrap:wrap;margin:12px 0'><input id='product-search' placeholder='Search product or market...' oninput='filterProducts()' style='flex:1;min-width:220px'><select id='product-market' onchange='filterProducts()'><option value=''>All markets</option>{opts}</select></div><p id='product-count' class='muted'></p><div class='table-wrap'><table><thead><tr><th>Market</th><th>Product</th><th>Currency</th><th>Base price</th><th>Base commission</th><th>Offers</th><th>Actions</th></tr></thead><tbody id='product-table'>{trs}</tbody></table></div></div>
@@ -532,6 +541,19 @@ class H(BaseHTTPRequestHandler):
             pid=int(path.split('/')[-1]);f=self.form();decide_remise(pid,[f.get('id')],f.get('decision'));return self.redirect(f'/remises/{pid}')
         if path.startswith('/currency-rates/'):
             pid=int(path.split('/')[-1]);save_currency_rates(self.form());return self.redirect(f'/products/{pid}')
+        if path.startswith('/products-sync/'):
+            pid=int(path.split('/')[-1])
+            try:
+                result=sync_all_product_deliveries()
+            except Exception as e:
+                return self.out(page('Sync error',f'<div class="panel"><h2>Synchronization failed</h2><p>{esc(e)}</p><a class="btn" href="/products/{pid}">Back to products</a></div>',period(pid)),500)
+            labels=[('Products checked','products'),('Linked deliveries checked','orders'),
+                    ('Deliveries updated','changed'),('Upsells cleared','upsells_cleared'),
+                    ('Remises cleared','remises_cleared'),('Upsells detected','upsells_detected'),
+                    ('Remises detected','remises_detected')]
+            items=''.join(f'<tr><td>{label}</td><td class="num"><strong>{result[key]:,}</strong></td></tr>' for label,key in labels)
+            body=f'<section class="hero"><div><span class="eyebrow">Products &amp; Offers</span><h1>Sync complete</h1><p>Linked imported deliveries have been recalculated across all months. Buyer dashboards and exports now reflect updated values.</p></div></section><div class="panel"><h2>Synchronization report</h2><div class="table-wrap"><table>{items}</table></div><p class="muted">Existing imports are preserved. Financial review decisions are retained when still applicable; superseded decisions are audited.</p><a class="btn" href="/products/{pid}">Back to Products</a> <a class="btn secondary" href="/dashboard/{pid}">View dashboard</a></div>'
+            return self.out(page('Products Sync',body,period(pid)))
         if path.startswith('/product-edit/'):
             parts=path.strip('/').split('/');pid=int(parts[1]);product_id=int(parts[2]);f=self.form();edit_product_info(product_id,f.get('name'),f.get('price'),f.get('commission'));return self.redirect(f'/products/{pid}')
         if path.startswith('/products/'):

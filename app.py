@@ -463,6 +463,8 @@ def recalculate_offers(product_id, preview=False):
             old_remise_dec=old_r['decision'] if old_r else None
             new_remise_dec=(old_remise_dec if old_r and new_remise and abs(float(old_r['reference_price'])-base)<.005 and abs(float(old_r['delivered_price'])-price)<.005 and abs(float(old_r['rate_mad'])-rate)<.00001 else 'PENDING') if new_remise else None
             changed=(abs(float(d['base_commission_usd'] or 0)-usd)>.0001 or abs(float(d['base_commission_mad'] or 0)-mad)>.0001 or abs(float(d['upsell_candidate_mad'] or 0)-candidate)>.0001 or abs(float(d['upsell_mad'] or 0)-paid)>.0001 or old_dec!=decision or abs(float(d['base_price_local'] or 0)-base)>.0001 or bool(old_r)!=new_remise or (old_r and new_remise and (abs(float(old_r['reference_price'])-base)>.005 or abs(float(old_r['gap_mad'])-(base-price)*rate)>.0001)))
+            # A rate-only edit must also refresh stored conversions and remise values.
+            changed = changed or abs(float(d['local_mad'] or 0)-rate)>.00001 or bool(old_r and new_remise and abs(float(old_r['rate_mad'] or 0)-rate)>.00001)
             if not changed:continue
             report['changed']+=1
             if float(d['upsell_candidate_mad'] or 0)>0 and candidate==0:report['upsells_cleared']+=1
@@ -483,6 +485,28 @@ def recalculate_offers(product_id, preview=False):
     except Exception:
         c.rollback();raise
     finally:c.close()
+
+def sync_all_product_deliveries():
+    """Recalculate linked imported deliveries across every product and period.
+
+    This uses the existing price-offer classifier, preserves manually reviewed
+    decisions when still valid, and archives changes in offer_recalc_audit.
+    Returns an aggregate report for the user interface. No source uploads are
+    deleted; the dashboards read updated delivery commissions dynamically.
+    """
+    c=db()
+    try:
+        ids=[r['id'] for r in c.execute('select id from products order by id').fetchall()]
+    finally:
+        c.close()
+    report={'products':len(ids),'orders':0,'changed':0,'upsells_cleared':0,
+            'remises_cleared':0,'upsells_detected':0,'remises_detected':0}
+    for product_id in ids:
+        part=recalculate_offers(product_id)
+        for k in ('orders','changed','upsells_cleared','remises_cleared',
+                  'upsells_detected','remises_detected'):
+            report[k]+=part[k]
+    return report
 
 def remise_rows(period_id):
     c=db();rows=c.execute("""select r.*,d.tracking_number,d.delivery_date,d.product_raw,b.name buyer,p.name product,m.code market from remise_reviews r join deliveries d on d.id=r.delivery_id join buyers b on b.id=r.buyer_id join products p on p.id=r.product_id join markets m on m.id=d.market_id where r.period_id=? order by r.decision desc,r.id desc""",(period_id,)).fetchall();c.close();return [dict(r) for r in rows]
