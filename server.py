@@ -581,4 +581,13 @@ class H(BaseHTTPRequestHandler):
         self.out(b'Not found',404,'text/plain')
 
 if __name__=='__main__':
-    init_db();ensure_admin();print(f'YOUSSEF.COM v9.4 Online running at http://{HOST}:{PORT}');ThreadingHTTPServer((HOST,PORT),H).serve_forever()
+    init_db();ensure_admin()
+    if os.getenv('AFRICAN_OFFER_BATCH_V1', '').strip():
+        from private_african_offers import apply_african_batch
+        try:
+            offer_batch_result=apply_african_batch(db,DB,norm,recalculate_offers)
+            print('African offer batch:', offer_batch_result, flush=True)
+        except Exception as e:
+            print('African offer batch failed:', repr(e), flush=True)
+    print(f'YOUSSEF.COM v9.4 Online running at http://{HOST}:{PORT}')
+    ThreadingHTTPServer((HOST,PORT),H).serve_forever()
