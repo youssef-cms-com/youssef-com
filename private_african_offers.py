@@ -46,13 +46,12 @@ def apply_african_batch(db_factory, db_path, norm, recalculate):
                 join markets m on m.id=p.market_id
                 where m.code=? and p.name_norm=?""", (market, norm(name))).fetchone()
             if product is None:
-                missing.append((market, str(name)))
+                missing.append((market, str(name), price, comm, count))
             else:
                 checked.append((product["id"], price, comm, count))
-        if missing:
-            return {"status": "BLOCKED_MISSING_PRODUCTS",
-                    "missing": missing, "matched": len(checked)}
-        ids = sorted({row[0] for row in checked})
+        # Missing exact-name products can be created from the reviewed workbook,
+        # rather than silently borrowing a different product's commission.
+        # This happens only after the persistent database has been backed up.
         if not previous:
             root = Path(db_path).parent / "offer_batch_backups"
             root.mkdir(parents=True, exist_ok=True)
@@ -65,6 +64,46 @@ def apply_african_batch(db_factory, db_path, norm, recalculate):
             stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
             c.execute("begin immediate")
             try:
+                if missing:
+                    by_name = {}
+                    for market, name, price, comm, count in missing:
+                        key_name = (market, norm(name))
+                        if key_name not in by_name or count > by_name[key_name][3]:
+                            by_name[key_name] = (name, price, comm, count)
+                    for (market, normalized), (name, price, comm, count) in by_name.items():
+                        market_row = c.execute("select id from markets where code=?", (market,)).fetchone()
+                        if not market_row:
+                            raise ValueError("Missing market: " + market)
+                        currency = "USD" if market == "RDC" else "XAF" if market in ("GABON","CAMEROUN","CONGO","TCHAD") else "XOF"
+                        rate_row = c.execute("select mad_rate from currency_rates where currency=?", (currency,)).fetchone()
+                        rate = float(rate_row["mad_rate"] or 0) if rate_row else 0.0
+                        c.execute("""insert into products(name,name_norm,market_id,
+                            commission_usd,commission_mad,price_local,local_mad)
+                            values(?,?,?,?,?,?,?)""",
+                            (name, normalized, market_row["id"], comm, 0, price, rate))
+                        new_id = c.execute("select last_insert_rowid() id").fetchone()["id"]
+                        c.execute("""insert into commission_rules
+                            (product_id,start_date,end_date,amount,currency,note,created_at)
+                            values(?,'1900-01-01',null,?,'USD','Initial reviewed African offer',?)""",
+                            (new_id,comm,stamp))
+                        for mkt, nm, pr, cm, cnt in missing:
+                            if (mkt,norm(nm)) == (market,normalized):
+                                checked.append((new_id,pr,cm,cnt))
+                        # Link only unassigned deliveries of this exact single product,
+                        # preserving multi-product orders and existing manual mappings.
+                        unlinked = c.execute("""select id,product_raw,status from deliveries
+                            where product_id is null and market_id=?""",
+                            (market_row["id"],)).fetchall()
+                        for delivery in unlinked:
+                            lines = [line.strip() for line in str(delivery["product_raw"] or "").splitlines()
+                                     if line.strip() and not line.strip().lower().startswith("-default at")]
+                            if len(lines) != 1 or norm(lines[0]) != normalized:
+                                continue
+                            flags = [f.strip() for f in str(delivery["status"] or "").split(",")
+                                     if f.strip() not in ("OK","MISSING PRODUCT/RATE")]
+                            c.execute("update deliveries set product_id=?,status=? where id=?",
+                                (new_id,", ".join(flags) or "OK",delivery["id"]))
+                ids = sorted({row[0] for row in checked})
                 for product_id, price, comm, count in checked:
                     c.execute("""insert into product_offers
                        (product_id,price,commission,note,created_at)
