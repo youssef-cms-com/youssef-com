@@ -36,7 +36,7 @@ c.commit()
 c.close()
 rows=app.missing_product_offer_rows(pid)
 assert any(r["name"]=="Test Product" and r["count"]==2 and r["market_code"]=="RDC" and r["price"]==35 for r in rows),rows
-page=server.review_page(pid)
+page=server.review_page(pid).decode('utf-8')
 assert "Add product" in page and "Save &amp; auto-sync" in page
 try:
     app.add_missing_product_offer(pid,"RDC","Test Product",33,11)
