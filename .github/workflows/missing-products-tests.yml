@@ -1,0 +1,21 @@
+name: Missing Products Quick Add Regression
+on:
+  push:
+    branches:
+      - feature/review-quick-add-missing-products-20261121
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements.txt
+      - run: python -m py_compile app.py server.py
+      - run: python tests/test_missing_product_quick_add.py
+      - run: python tests/test_review_sync.py
