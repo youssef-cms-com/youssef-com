@@ -98,12 +98,12 @@ def add_city_mapping(city,code):
     c=db();mid=market_id(c,code)
     if not mid:c.close();raise ValueError('Country is not valid')
     c.execute('insert into city_mappings(city,city_norm,market_id,created_at,source) values(?,?,?,?,?) on conflict(city_norm) do update set city=excluded.city,market_id=excluded.market_id,source="MANUAL"',(city,norm(city),mid,datetime.now().isoformat(timespec='seconds'),'MANUAL'))
-    c.commit();c.close();recalculate_city_deliveries(city)
+    c.commit();c.close();recalculate_city_deliveries(city);sync_review_center()
 
 def delete_city_mapping(mapping_id):
     c=db();r=c.execute('select * from city_mappings where id=?',(mapping_id,)).fetchone()
     if not r:c.close();return
-    city=r['city'];c.execute('delete from city_mappings where id=?',(mapping_id,));c.commit();c.close();recalculate_city_deliveries(city)
+    city=r['city'];c.execute('delete from city_mappings where id=?',(mapping_id,));c.commit();c.close();recalculate_city_deliveries(city);sync_review_center()
 
 def recalculate_city_deliveries(city):
     c=db();ncity=norm(city);rows=c.execute('select * from deliveries where source="GLOBAL"').fetchall();changed=0
@@ -818,6 +818,43 @@ def assign_buyer_alias(period_id,raw_name,buyer_id):
     return reconcile_unmatched_buyers(buyer_id)
 
 
+
+def sync_review_center():
+    """Repair unresolved buyer/product links and refresh commissions in all months.
+
+    Never changes an existing manual country override or buyer assignment.
+    Price-offer decisions are recalculated by the existing audited engine.
+    """
+    buyers=reconcile_unmatched_buyers()
+    c=db()
+    linked=0
+    try:
+        # A country can be assigned before the relevant product is created.
+        # Link those older imported rows now that the product exists.
+        rows=c.execute("""select d.id,d.market_id,d.product_raw,d.status
+            from deliveries d where d.market_id is not null and d.product_id is null""").fetchall()
+        for d in rows:
+            product=lookup_product(c,d['market_id'],base_product_name(d['product_raw'] or ''))
+            if not product:continue
+            flags=[x.strip() for x in str(d['status'] or '').split(',')
+                   if x.strip() and x.strip() not in
+                   ('OK','MISSING PRODUCT/RATE','UNMATCHED OFFER PRICE','MISSING COMMISSION PERIOD')]
+            c.execute('update deliveries set product_id=?,status=? where id=?',
+                      (product['id'],', '.join(dict.fromkeys(flags)) or 'OK',d['id']))
+            linked+=1
+        c.commit()
+    except Exception:
+        c.rollback()
+        raise
+    finally:
+        c.close()
+    totals=sync_all_product_deliveries()
+    totals['buyers_linked']=buyers['deliveries']
+    totals['spend_linked']=buyers['spend']
+    totals['products_linked']=linked
+    return totals
+
+
 def expedition_review_rows(period_id):
     c=db()
     rows=c.execute("""select d.id,d.source,d.source_row,d.tracking_number,d.order_id,d.buyer_raw,
@@ -843,8 +880,10 @@ def assign_delivery_country(period_id,delivery_id,market_code):
         if collision!=1:raise ValueError('Tracking number is not unique; cannot safely save override')
         c.execute('insert into delivery_market_overrides(period_id,source,tracking_key,market_id,decided_at) values(?,?,?,?,?) on conflict(period_id,source,tracking_key) do update set market_id=excluded.market_id,decided_at=excluded.decided_at',(period_id,'GLOBAL',key,mid,datetime.now().isoformat(timespec='seconds')))
         prod=lookup_product(c,mid,base_product_name(d['product_raw'] or ''))
+        resolved_buyer=d['buyer_id'] or find_buyer(c,d['buyer_raw'])
         code=market_code; usd=mad=baseprice=rate=candidate=paid=0.0;decision='NONE';pid=None
-        status=[v.strip() for v in str(d['status'] or '').split(',') if v.strip() not in ('OK','UNMAPPED COUNTRY','MISSING PRODUCT/RATE','UNMATCHED OFFER PRICE','INFERRED UPSELL - VERIFY QUANTITY')]
+        status=[v.strip() for v in str(d['status'] or '').split(',') if v.strip() not in ('OK','UNMAPPED COUNTRY','MISSING PRODUCT/RATE','UNMATCHED OFFER PRICE','INFERRED UPSELL - VERIFY QUANTITY','MISSING COMMISSION PERIOD') and (v.strip()!='UNMATCHED BUYER' or not resolved_buyer)]
+        if not resolved_buyer and 'UNMATCHED BUYER' not in status:status.append('UNMATCHED BUYER')
         if prod:
             pid=prod['id'];rate=float(prod['local_mad'] or 0)
             offer,remise,multi,classification=classify_sale(c,pid,d['product_raw'] or '',float(d['price'] or 0))
@@ -858,18 +897,20 @@ def assign_delivery_country(period_id,delivery_id,market_code):
                 decision=d['upsell_decision'] if d['upsell_decision'] in ('APPROVED','REJECTED') else 'PENDING'
                 paid=candidate if decision=='APPROVED' else 0
             elif candidate and code=='MAROC':decision='AUTO';paid=candidate
-            if remise and not multi and offer and d['buyer_id']:
+            if remise and not multi and offer and resolved_buyer:
                 gap=baseprice-float(d['price'] or 0)
                 c.execute("""insert into remise_reviews(delivery_id,period_id,buyer_id,product_id,reference_price,delivered_price,gap_local,rate_mad,gap_mad,decision)
-                    values(?,?,?,?,?,?,?,?,?,'PENDING') on conflict(delivery_id) do update set buyer_id=excluded.buyer_id,product_id=excluded.product_id,reference_price=excluded.reference_price,delivered_price=excluded.delivered_price,gap_local=excluded.gap_local,rate_mad=excluded.rate_mad,gap_mad=excluded.gap_mad,decision=case when remise_reviews.reference_price=excluded.reference_price and remise_reviews.delivered_price=excluded.delivered_price then remise_reviews.decision else 'PENDING' end""",(delivery_id,period_id,d['buyer_id'],pid,baseprice,float(d['price'] or 0),gap,rate,round(gap*rate,4)))
+                    values(?,?,?,?,?,?,?,?,?,'PENDING') on conflict(delivery_id) do update set buyer_id=excluded.buyer_id,product_id=excluded.product_id,reference_price=excluded.reference_price,delivered_price=excluded.delivered_price,gap_local=excluded.gap_local,rate_mad=excluded.rate_mad,gap_mad=excluded.gap_mad,decision=case when remise_reviews.reference_price=excluded.reference_price and remise_reviews.delivered_price=excluded.delivered_price then remise_reviews.decision else 'PENDING' end""",(delivery_id,period_id,resolved_buyer,pid,baseprice,float(d['price'] or 0),gap,rate,round(gap*rate,4)))
             else:c.execute('delete from remise_reviews where delivery_id=?',(delivery_id,))
         else:
             status.append('MISSING PRODUCT/RATE');c.execute('delete from remise_reviews where delivery_id=?',(delivery_id,))
-        c.execute("""update deliveries set market_id=?,product_id=?,commission_rule_id=NULL,base_commission_usd=?,base_commission_mad=?,base_price_local=?,local_mad=?,upsell_candidate_mad=?,upsell_mad=?,upsell_decision=?,status=? where id=?""",(mid,pid,usd,mad,baseprice,rate,candidate,paid,decision,', '.join(dict.fromkeys(status)) or 'OK',delivery_id))
+        c.execute("""update deliveries set market_id=?,buyer_id=?,product_id=?,commission_rule_id=NULL,base_commission_usd=?,base_commission_mad=?,base_price_local=?,local_mad=?,upsell_candidate_mad=?,upsell_mad=?,upsell_decision=?,status=? where id=?""",(mid,resolved_buyer,pid,usd,mad,baseprice,rate,candidate,paid,decision,', '.join(dict.fromkeys(status)) or 'OK',delivery_id))
         c.commit()
     except Exception:
         c.rollback();raise
     finally:c.close()
+    # Refresh linked delivery financial fields with the shared price-offer engine.
+    if pid:recalculate_offers(pid)
 
 
 def rebuild_period_upsells(period_id, apply=False):

@@ -1,0 +1,21 @@
+name: Review Center Sync Tests
+on:
+  push:
+    branches:
+      - fix/review-center-auto-sync-20261121
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements.txt
+      - run: python -m py_compile app.py server.py
+      - run: python tests/test_review_sync.py

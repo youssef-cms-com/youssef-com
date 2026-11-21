@@ -260,7 +260,11 @@ def review_page(pid,notice=''):
     b=''.join(f'<tr><td>{esc(x["city"])}</td><td class="num">{x["cnt"]}</td></tr>' for x in uc) or '<tr><td colspan="2" class="empty">All cities mapped.</td></tr>'
     d=''.join(f'<tr><td>{esc(str(x["product_raw"]).split(chr(10))[0])}</td><td class="num">{x["cnt"]}</td></tr>' for x in mp) or '<tr><td colspan="2" class="empty">All product rates found.</td></tr>'
     e=''.join(f'''<tr><td>{esc(x["tracking_number"] or x["order_id"] or str(x["id"]))}<small>{esc(x["delivery_date"] or '')}</small></td><td>{esc(x["buyer_raw"])}</td><td>{esc(x["product_raw"][:95])}</td><td>{esc(x["market_name"] or 'Unassigned')}</td><td><form method="post" action="/review/expedition/{pid}" style="display:flex;gap:6px"><input type="hidden" name="delivery_id" value="{x["id"]}"><select name="market_code">{market_opts}</select><button class="btn">Save</button></form></td></tr>''' for x in exp) or '<tr><td colspan="5" class="empty">No Expedition deliveries.</td></tr>'
-    body=f'''<section class="hero"><div><span class="eyebrow">Quality control</span><h1>Review Center</h1><p>Resolve unmatched media buyers and assign Expedition countries per tracking number.</p></div></section>{f'<div class="notice">{esc(notice)}</div>' if notice else ''}<div class="panel"><div class="panel-head"><h2>Unmatched media buyers</h2><span class="pill">{sum(x['cnt'] for x in ub)} deliveries</span></div><p class="muted">Assign a source name once. The alias is remembered and unassigned historical deliveries and spend are linked automatically.</p><div class="table-wrap"><table><tr><th>Source</th><th>Imported name</th><th>Rows</th><th>Assign to buyer</th></tr>{a}</table></div></div><div class="panel"><div class="panel-head"><h2>Expédition — individual delivery review</h2><span class="pill warn">{sum(x['market_id'] is None for x in exp)} pending</span></div><p class="muted">Each tracking number has its own country. No blanket mapping of Expédition is created. Saved choices survive reimports.</p><div class="table-wrap"><table><tr><th>Tracking</th><th>Buyer</th><th>Product</th><th>Country</th><th>Assign country</th></tr>{e}</table></div></div><div class="grid2"><div class="panel"><h2>Other unknown cities</h2><a class="text-link" href="/cities/{pid}">Manage city mappings</a><table><tr><th>City</th><th>Rows</th></tr>{b}</table></div><div class="panel"><h2>Missing products / rates</h2><table><tr><th>Product</th><th>Rows</th></tr>{d}</table></div></div>'''
+    body=f'''<section class="hero"><div><span class="eyebrow">Quality control</span><h1>Review Center</h1><p>Resolve unmatched media buyers and assign Expedition countries per tracking number.</p></div></section>
+    <div class="panel" style="background:linear-gradient(110deg,#f2f8ff,#f2fcf9);border:1px solid #cfe3ee">
+      <div class="panel-head" style="flex-wrap:wrap"><div><span class="eyebrow">Live reconciliation</span><h2>Sync Review Center</h2><p class="muted">Repair unresolved product and buyer links, then refresh imported commissions, remises and upsells across every month.</p></div>
+      <form method="post" action="/review/sync/{pid}" onsubmit="return confirm('Synchronize the Review Center and recalculate linked commissions for all months?')"><button class="btn" type="submit">↻ Sync Review Center</button></form></div>
+    </div>{f'<div class="notice">{esc(notice)}</div>' if notice else ''}<div class="panel"><div class="panel-head"><h2>Unmatched media buyers</h2><span class="pill">{sum(x['cnt'] for x in ub)} deliveries</span></div><p class="muted">Assign a source name once. The alias is remembered and unassigned historical deliveries and spend are linked automatically.</p><div class="table-wrap"><table><tr><th>Source</th><th>Imported name</th><th>Rows</th><th>Assign to buyer</th></tr>{a}</table></div></div><div class="panel"><div class="panel-head"><h2>Expédition — individual delivery review</h2><span class="pill warn">{sum(x['market_id'] is None for x in exp)} pending</span></div><p class="muted">Each tracking number has its own country. No blanket mapping of Expédition is created. Saved choices survive reimports.</p><div class="table-wrap"><table><tr><th>Tracking</th><th>Buyer</th><th>Product</th><th>Country</th><th>Assign country</th></tr>{e}</table></div></div><div class="grid2"><div class="panel"><h2>Other unknown cities</h2><a class="text-link" href="/cities/{pid}">Manage city mappings</a><table><tr><th>City</th><th>Rows</th></tr>{b}</table></div><div class="panel"><h2>Missing products / rates</h2><table><tr><th>Product</th><th>Rows</th></tr>{d}</table></div></div>'''
     return page('Review',body,p)
 
 def imports_page(pid):
@@ -475,17 +479,28 @@ class H(BaseHTTPRequestHandler):
         if path=='/new':
             if not can_operate():return self.forbidden('Read-only viewer account')
         if path.startswith('/review/buyer/'):
+            if not can_operate():return self.forbidden('Read-only viewer account')
             pid=int(path.split('/')[-1]);f=self.form()
             try:
                 result=assign_buyer_alias(pid,f.get('raw'),int(f.get('buyer_id') or 0))
-                return self.out(review_page(pid,f"Updated {result['deliveries']} deliveries and {result['spend']} spend rows."))
+                sync=sync_review_center()
+                return self.out(review_page(pid,f"Buyer linked: {result['deliveries']} deliveries, {result['spend']} spend rows. Auto-sync: {sync['changed']} deliveries recalculated across all months."))
             except (ValueError,TypeError) as e:return self.out(review_page(pid,str(e)),400)
         if path.startswith('/review/expedition/'):
+            if not can_operate():return self.forbidden('Read-only viewer account')
             pid=int(path.split('/')[-1]);f=self.form()
             try:
                 assign_delivery_country(pid,int(f.get('delivery_id') or 0),f.get('market_code'))
-                return self.out(review_page(pid,'Country saved for this delivery. Commissions recalculated.'))
+                sync=sync_review_center()
+                return self.out(review_page(pid,f"Country saved. Auto-sync complete: {sync['changed']} delivery calculations updated."))
             except (ValueError,TypeError) as e:return self.out(review_page(pid,str(e)),400)
+        if path.startswith('/review/sync/'):
+            if not can_operate():return self.forbidden('Read-only viewer account')
+            pid=int(path.split('/')[-1])
+            try:
+                sync=sync_review_center()
+                return self.out(review_page(pid,f"Sync complete across all months: {sync['buyers_linked']} buyers linked, {sync['spend_linked']} spend rows linked, {sync['products_linked']} product links repaired, {sync['orders']} deliveries checked, {sync['changed']} calculations updated."))
+            except Exception as e:return self.out(review_page(pid,'Sync failed: '+str(e)),500)
 
             f=self.form();pid=ensure_period(int(f['year']),int(f['month']));return self.redirect(f'/dashboard/{pid}')
         if not can_operate():return self.forbidden('Read-only viewer account')
