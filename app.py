@@ -651,6 +651,73 @@ def period_summary(period_id):
 def review(period_id):
     c=db(); ub=c.execute('select source,buyer_raw,count(*) cnt from deliveries where period_id=? and buyer_id is null group by source,buyer_raw order by cnt desc',(period_id,)).fetchall(); uc=c.execute('select city,count(*) cnt from deliveries where period_id=? and market_id is null group by city order by cnt desc',(period_id,)).fetchall(); mp=c.execute('select product_raw,count(*) cnt from deliveries where period_id=? and (status like "%MISSING PRODUCT%" or status like "%MISSING COMMISSION PERIOD%") group by product_norm order by cnt desc',(period_id,)).fetchall(); c.close(); return [dict(x) for x in ub],[dict(x) for x in uc],[dict(x) for x in mp]
 
+
+def missing_product_offer_rows(period_id):
+    """One review action per known market, product and observed delivered price."""
+    c=db()
+    try:
+        rows=c.execute("""select d.market_id,m.code market_code,m.name market_name,
+            d.product_raw,d.price,count(*) cnt
+            from deliveries d left join markets m on m.id=d.market_id
+            where d.period_id=? and
+              (d.product_id is null or d.status like '%MISSING PRODUCT%'
+               or d.status like '%MISSING COMMISSION PERIOD%')
+            group by d.market_id,m.code,m.name,d.product_norm,d.price
+            order by cnt desc,m.name,d.product_norm,d.price""",(period_id,)).fetchall()
+        result=[]
+        for d in rows:
+            name=base_product_name(d['product_raw'] or '')
+            market=d['market_code']
+            existing=lookup_product(c,d['market_id'],name) if market else None
+            price=float(d['price'] or 0)
+            offer=c.execute('select id from product_offers where product_id=? and abs(price-?)<0.005',
+                            (existing['id'],price)).fetchone() if existing else None
+            result.append(dict(name=name,market_code=market,market_name=d['market_name'] or 'Unassigned',
+                               price=price,count=int(d['cnt']),product_id=existing['id'] if existing else None,
+                               has_offer=bool(offer),
+                               currency=MARKET_CURRENCY.get(market,'') if market else '',
+                               single_product=not order_is_multi(d['product_raw'] or '')))
+        return result
+    finally:c.close()
+
+def add_missing_product_offer(period_id,market_code,name,price,commission):
+    """Create a missing product or price offer after explicit human rate approval."""
+    name=str(name or '').strip()
+    market_code=str(market_code or '').strip().upper()
+    price=float(price);commission=float(commission)
+    if not name or not (price>0 and 0<=commission<100000):
+        raise ValueError('A valid product, selling price and commission are required')
+    if market_code not in {code for code,_,_ in MARKETS}:
+        raise ValueError('Assign a valid country first')
+    c=db()
+    try:
+        market=market_id(c,market_code)
+        matching=c.execute("""select product_raw from deliveries
+            where period_id=? and market_id=? and abs(coalesce(price,0)-?)<0.005
+            and (product_id is null or status like '%MISSING PRODUCT%'
+                 or status like '%MISSING COMMISSION PERIOD%')""",
+            (period_id,market,price)).fetchall()
+        if not any(norm(base_product_name(d['product_raw']))==norm(name)
+                   and not order_is_multi(d['product_raw']) for d in matching):
+            raise ValueError('This single-product price is no longer pending. Refresh Review Center.')
+        existing=lookup_product(c,market,name)
+        ensure_currency_rates(c)
+        rate_row=c.execute('select mad_rate from currency_rates where currency=?',
+                           (MARKET_CURRENCY[market_code],)).fetchone()
+        rate=float(rate_row['mad_rate'] or 0) if rate_row else 0.0
+        product_id=existing['id'] if existing else None
+    finally:c.close()
+    if product_id is None:
+        add_product(name,market_code,commission,price,rate)
+        c=db()
+        try:
+            product_id=lookup_product(c,market,name)['id']
+        finally:c.close()
+    add_product_offer(product_id,price,commission,note='Confirmed from Review Center')
+    result=sync_review_center()
+    return dict(result,product_id=product_id)
+
+
 def seed_all():
     init_db(True); seed_products(BASE/'seed'/'products.xlsx'); pid=ensure_period(2026,7);import_deliveries(pid,BASE/'seed'/'deliveries_maroc.xlsx',False);import_deliveries(pid,BASE/'seed'/'deliveries_global.xlsx',True)
     for code,_,_ in MARKETS:
