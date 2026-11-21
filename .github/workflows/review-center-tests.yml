@@ -3,6 +3,7 @@ on:
   push:
     branches:
       - fix/review-center-auto-sync-20261121
+      - main
   pull_request:
     branches:
       - main
