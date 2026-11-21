@@ -98,12 +98,12 @@ def add_city_mapping(city,code):
     c=db();mid=market_id(c,code)
     if not mid:c.close();raise ValueError('Country is not valid')
     c.execute('insert into city_mappings(city,city_norm,market_id,created_at,source) values(?,?,?,?,?) on conflict(city_norm) do update set city=excluded.city,market_id=excluded.market_id,source="MANUAL"',(city,norm(city),mid,datetime.now().isoformat(timespec='seconds'),'MANUAL'))
-    c.commit();c.close();recalculate_city_deliveries(city)
+    c.commit();c.close();recalculate_city_deliveries(city);sync_review_center()
 
 def delete_city_mapping(mapping_id):
     c=db();r=c.execute('select * from city_mappings where id=?',(mapping_id,)).fetchone()
     if not r:c.close();return
-    city=r['city'];c.execute('delete from city_mappings where id=?',(mapping_id,));c.commit();c.close();recalculate_city_deliveries(city)
+    city=r['city'];c.execute('delete from city_mappings where id=?',(mapping_id,));c.commit();c.close();recalculate_city_deliveries(city);sync_review_center()
 
 def recalculate_city_deliveries(city):
     c=db();ncity=norm(city);rows=c.execute('select * from deliveries where source="GLOBAL"').fetchall();changed=0
@@ -882,7 +882,8 @@ def assign_delivery_country(period_id,delivery_id,market_code):
         prod=lookup_product(c,mid,base_product_name(d['product_raw'] or ''))
         resolved_buyer=d['buyer_id'] or find_buyer(c,d['buyer_raw'])
         code=market_code; usd=mad=baseprice=rate=candidate=paid=0.0;decision='NONE';pid=None
-        status=[v.strip() for v in str(d['status'] or '').split(',') if v.strip() not in ('OK','UNMAPPED COUNTRY','MISSING PRODUCT/RATE','UNMATCHED OFFER PRICE','INFERRED UPSELL - VERIFY QUANTITY')]
+        status=[v.strip() for v in str(d['status'] or '').split(',') if v.strip() not in ('OK','UNMAPPED COUNTRY','MISSING PRODUCT/RATE','UNMATCHED OFFER PRICE','INFERRED UPSELL - VERIFY QUANTITY','MISSING COMMISSION PERIOD') and (v.strip()!='UNMATCHED BUYER' or not resolved_buyer)]
+        if not resolved_buyer and 'UNMATCHED BUYER' not in status:status.append('UNMATCHED BUYER')
         if prod:
             pid=prod['id'];rate=float(prod['local_mad'] or 0)
             offer,remise,multi,classification=classify_sale(c,pid,d['product_raw'] or '',float(d['price'] or 0))
