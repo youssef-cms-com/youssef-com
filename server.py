@@ -258,13 +258,45 @@ def review_page(pid,notice=''):
     market_opts=''.join(f'<option value="{code}">{esc(name)}</option>' for code,name,_ in MARKETS)
     a=''.join(f'''<tr><td>{esc(x["source"])}</td><td>{esc(x["buyer_raw"])}</td><td class="num">{x["cnt"]}</td><td><form method="post" action="/review/buyer/{pid}" style="display:flex;gap:6px"><input type="hidden" name="raw" value="{esc(x["buyer_raw"])}"><select name="buyer_id">{buyer_opts}</select><button class="btn">Assign</button></form></td></tr>''' for x in ub) or '<tr><td colspan="4" class="empty">No unmatched buyer names.</td></tr>'
     b=''.join(f'<tr><td>{esc(x["city"])}</td><td class="num">{x["cnt"]}</td></tr>' for x in uc) or '<tr><td colspan="2" class="empty">All cities mapped.</td></tr>'
-    d=''.join(f'<tr><td>{esc(str(x["product_raw"]).split(chr(10))[0])}</td><td class="num">{x["cnt"]}</td></tr>' for x in mp) or '<tr><td colspan="2" class="empty">All product rates found.</td></tr>'
+    missing=missing_product_offer_rows(pid)
+    cards=[]
+    for item in missing:
+        name=esc(item['name']);market=esc(item['market_code'] or '');currency=esc(item['currency'])
+        cnt=item['count'];price=item['price']
+        if not market:
+            action='<span class="pill warn">Assign country first</span>'
+        elif not item['single_product']:
+            action='<span class="pill warn">Multi-product order — review manually</span>'
+        elif price<=0:
+            action='<span class="pill warn">Invalid price — review manually</span>'
+        elif item['has_offer']:
+            action='<span class="pill good">Offer exists — sync required</span>'
+        else:
+            label='Add price offer' if item['product_id'] else 'Add product'
+            action=f"""<details><summary class="btn secondary compact-btn" style="cursor:pointer">{label}</summary>
+                <form method="post" action="/review/product-add/{pid}" style="display:grid;gap:8px;min-width:245px;margin-top:10px">
+                  <input type="hidden" name="market_code" value="{market}">
+                  <input type="hidden" name="product_name" value="{name}">
+                  <input type="hidden" name="price" value="{price}">
+                  <small class="muted">Market: {esc(item['market_name'])} · Observed delivered price: {money(price)} {currency}</small>
+                  <label>Commission (MAD for Morocco, USD for other countries)
+                    <input name="commission" type="number" step="0.01" min="0" required placeholder="Verified commission">
+                  </label>
+                  <label style="display:flex;align-items:flex-start;gap:7px;font-size:11px">
+                    <input type="checkbox" name="approved" value="yes" required style="width:auto">
+                    Confirm this is an official selling-price offer, not a remise
+                  </label>
+                  <button class="btn compact-btn" type="submit">Save &amp; auto-sync</button>
+                </form></details>"""
+        cards.append(f"""<tr><td><strong>{name}</strong></td><td>{esc(item['market_name'])}</td>
+            <td class="num">{money(price)} {currency}</td><td class="num">{cnt}</td><td>{action}</td></tr>""")
+    d=''.join(cards) or '<tr><td colspan="5" class="empty">All product rates found.</td></tr>'
     e=''.join(f'''<tr><td>{esc(x["tracking_number"] or x["order_id"] or str(x["id"]))}<small>{esc(x["delivery_date"] or '')}</small></td><td>{esc(x["buyer_raw"])}</td><td>{esc(x["product_raw"][:95])}</td><td>{esc(x["market_name"] or 'Unassigned')}</td><td><form method="post" action="/review/expedition/{pid}" style="display:flex;gap:6px"><input type="hidden" name="delivery_id" value="{x["id"]}"><select name="market_code">{market_opts}</select><button class="btn">Save</button></form></td></tr>''' for x in exp) or '<tr><td colspan="5" class="empty">No Expedition deliveries.</td></tr>'
     body=f'''<section class="hero"><div><span class="eyebrow">Quality control</span><h1>Review Center</h1><p>Resolve unmatched media buyers and assign Expedition countries per tracking number.</p></div></section>
     <div class="panel" style="background:linear-gradient(110deg,#f2f8ff,#f2fcf9);border:1px solid #cfe3ee">
       <div class="panel-head" style="flex-wrap:wrap"><div><span class="eyebrow">Live reconciliation</span><h2>Sync Review Center</h2><p class="muted">Repair unresolved product and buyer links, then refresh imported commissions, remises and upsells across every month.</p></div>
       <form method="post" action="/review/sync/{pid}" onsubmit="return confirm('Synchronize the Review Center and recalculate linked commissions for all months?')"><button class="btn" type="submit">↻ Sync Review Center</button></form></div>
-    </div>{f'<div class="notice">{esc(notice)}</div>' if notice else ''}<div class="panel"><div class="panel-head"><h2>Unmatched media buyers</h2><span class="pill">{sum(x['cnt'] for x in ub)} deliveries</span></div><p class="muted">Assign a source name once. The alias is remembered and unassigned historical deliveries and spend are linked automatically.</p><div class="table-wrap"><table><tr><th>Source</th><th>Imported name</th><th>Rows</th><th>Assign to buyer</th></tr>{a}</table></div></div><div class="panel"><div class="panel-head"><h2>Expédition — individual delivery review</h2><span class="pill warn">{sum(x['market_id'] is None for x in exp)} pending</span></div><p class="muted">Each tracking number has its own country. No blanket mapping of Expédition is created. Saved choices survive reimports.</p><div class="table-wrap"><table><tr><th>Tracking</th><th>Buyer</th><th>Product</th><th>Country</th><th>Assign country</th></tr>{e}</table></div></div><div class="grid2"><div class="panel"><h2>Other unknown cities</h2><a class="text-link" href="/cities/{pid}">Manage city mappings</a><table><tr><th>City</th><th>Rows</th></tr>{b}</table></div><div class="panel"><h2>Missing products / rates</h2><table><tr><th>Product</th><th>Rows</th></tr>{d}</table></div></div>'''
+    </div>{f'<div class="notice">{esc(notice)}</div>' if notice else ''}<div class="panel"><div class="panel-head"><h2>Unmatched media buyers</h2><span class="pill">{sum(x['cnt'] for x in ub)} deliveries</span></div><p class="muted">Assign a source name once. The alias is remembered and unassigned historical deliveries and spend are linked automatically.</p><div class="table-wrap"><table><tr><th>Source</th><th>Imported name</th><th>Rows</th><th>Assign to buyer</th></tr>{a}</table></div></div><div class="panel"><div class="panel-head"><h2>Expédition — individual delivery review</h2><span class="pill warn">{sum(x['market_id'] is None for x in exp)} pending</span></div><p class="muted">Each tracking number has its own country. No blanket mapping of Expédition is created. Saved choices survive reimports.</p><div class="table-wrap"><table><tr><th>Tracking</th><th>Buyer</th><th>Product</th><th>Country</th><th>Assign country</th></tr>{e}</table></div></div><div class="grid2"><div class="panel"><h2>Other unknown cities</h2><a class="text-link" href="/cities/{pid}">Manage city mappings</a><table><tr><th>City</th><th>Rows</th></tr>{b}</table></div><div class="panel"><h2>Missing products / rates</h2><p class="muted" style="margin:8px 0 14px">Select an identified market and validate the observed selling price and commission. Unconfirmed prices may be remises and are never added automatically. Saving immediately links missing products and synchronizes commissions.</p><div class="table-wrap"><table><tr><th>Product</th><th>Market</th><th>Delivered price</th><th>Orders</th><th>Action</th></tr>{d}</table></div></div></div>'''
     return page('Review',body,p)
 
 def imports_page(pid):
@@ -478,6 +510,15 @@ class H(BaseHTTPRequestHandler):
             c.close();return self.redirect(f'/users/{pid}')
         if path=='/new':
             if not can_operate():return self.forbidden('Read-only viewer account')
+        if path.startswith('/review/product-add/'):
+            if not can_operate():return self.forbidden('Read-only viewer account')
+            pid=int(path.split('/')[-1]);f=self.form()
+            if f.get('approved')!='yes':
+                return self.out(review_page(pid,'Confirm this is an official price offer before saving.'),400)
+            try:
+                result=add_missing_product_offer(pid,f.get('market_code'),f.get('product_name'),f.get('price'),f.get('commission'))
+                return self.out(review_page(pid,f"Product offer saved. Automatically synchronized {result['changed']} delivery calculations across all months."))
+            except (ValueError,TypeError) as e:return self.out(review_page(pid,str(e)),400)
         if path.startswith('/review/buyer/'):
             if not can_operate():return self.forbidden('Read-only viewer account')
             pid=int(path.split('/')[-1]);f=self.form()
