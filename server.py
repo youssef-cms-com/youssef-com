@@ -301,8 +301,28 @@ def review_page(pid,notice=''):
 
 def imports_page(pid):
     p=period(pid);c=db();hist=c.execute('select * from imports where period_id=? order by id desc',(pid,)).fetchall();c.close();opts=''.join(f'<option value="{code}">{name}</option>' for code,name,_ in MARKETS);trs=''.join(f'<tr><td>{esc(r["created_at"])}</td><td>{esc(r["kind"])}</td><td>{esc(r["market_code"] or "—")}</td><td>{esc(r["filename"])}</td><td class="num">{r["rows_imported"]}</td><td class="num">{r["warnings"]}</td></tr>' for r in hist)
+
+    counts=month_reset_counts(pid)
+    reset_panel=f"""<div class="panel" style="border:1px solid #e9b8a8;background:linear-gradient(125deg,#fffaf7,#fff)">
+      <div class="panel-head" style="flex-wrap:wrap;gap:12px">
+        <div><span class="eyebrow">Admin · Month maintenance</span><h2>Reset Month Data</h2>
+          <p class="muted" style="margin:7px 0 0">Selected month: <strong>{esc(p['label'])}</strong>. Clear imported deliveries and spend only, then upload corrected Excel files.</p></div>
+        <span class="pill warn">{counts['deliveries']:,} deliveries · {counts['spend']:,} spend rows</span>
+      </div>
+      <p class="muted" style="margin-bottom:12px">Also clears this month's delivery-specific upsell/remise reviews, Expedition overrides and delivery/spend import history. Product prices, commissions, offers, currencies, buyers, settings, adjustments and other months stay unchanged. An automatic SQLite backup is saved before reset. Historical payouts and carry-forward may change until re-import is complete.</p>
+      <form method="post" action="/month-reset/{pid}" onsubmit="return confirm('FINAL CONFIRMATION: reset ONLY '+{p['label']!r}+' deliveries and spend? Backup will be created first.')" style="display:flex;flex-wrap:wrap;align-items:flex-end;gap:12px">
+        <label style="min-width:190px">Type <strong>{esc(p['label'])}</strong> to confirm
+          <input type="text" name="confirm_month" autocomplete="off" placeholder="{esc(p['label'])}" required>
+        </label>
+        <label style="max-width:360px;display:flex;align-items:center;gap:7px">
+          <input name="acknowledge" type="checkbox" value="yes" required style="width:auto">
+          I understand the selected month's imported deliveries, spend and review decisions will be removed
+        </label>
+        <button class="btn" type="submit" style="background:#ac3535;border-color:#ac3535">Reset selected month</button>
+      </form>
+    </div>""" if is_admin() else ''
     body=f'''<section class="hero"><div><span class="eyebrow">Automation</span><h1>Import Center</h1><p>Upload the monthly exports. Country filtering, buyer matching, product linking and calculations run automatically.</p></div></section><div class="grid2"><div class="panel upload-panel"><form method="post" enctype="multipart/form-data"><div class="field"><label>Import type</label><select name="kind" id="import-kind" onchange="document.getElementById('import-market').disabled=this.value==='products';document.getElementById('import-global-note').style.display=this.value==='products'?'block':'none'"><option value="deliveries_maroc">Morocco deliveries</option><option value="deliveries_global">Global deliveries</option><option value="spend">Country spend</option><option value="products">Products / commissions / prices</option></select></div><div class="field"><label>Country (spend only)</label><select name="market" id="import-market">{opts}</select><small id="import-global-note" style="display:none;color:#21866d;margin-top:8px">Global product import: market is read from each Excel row. No country selection required.</small></div><div class="field"><label>Excel file</label><input type="file" name="file" accept=".xlsx"></div><button class="btn">Import & recalculate</button></form></div><div class="panel info-card"><span class="eyebrow">Automatic workflow</span><h2>One upload → complete recalculation</h2><p>Global deliveries are filtered by city. Buyer aliases are matched. Products, commissions, original prices and upsells are linked by market. Bonuses and payout rules then recalculate automatically.</p></div></div><div class="panel"><h2>Import history</h2><div class="table-wrap"><table><tr><th>Time</th><th>Type</th><th>Market</th><th>File</th><th class="num">Rows</th><th class="num">Warnings</th></tr>{trs}</table></div></div>'''
-    return page('Imports',body,p)
+    return page('Imports',body+reset_panel,p)
 
 def products_page(pid):
     p=period(pid);c=db();ensure_currency_rates(c)
@@ -619,6 +639,21 @@ class H(BaseHTTPRequestHandler):
             pid=int(path.split('/')[-1]);f=self.form();c=db();c.execute('update settings set maroc_spend_mad=?,other_usd_mad=?,usdt_mad=?,upsell_maroc=?,upsell_africa=?,remise_pct=? where period_id=?',(float(f['maroc_spend_mad']),float(f['other_usd_mad']),float(f['usdt_mad']),float(f['upsell_maroc'])/100,float(f['upsell_africa'])/100,float(f['remise_pct'])/100,pid));c.commit();c.close();return self.redirect(f'/settings/{pid}')
         if path.startswith('/adjustments/'):
             pid=int(path.split('/')[-1]);save_adjustments(pid,self.form());return self.redirect(f'/adjustments/{pid}')
+        if path.startswith('/month-reset/'):
+            if not is_admin():return self.forbidden('Admin access required')
+            pid=int(path.split('/')[-1]);f=self.form()
+            if f.get('acknowledge')!='yes':
+                return self.out(page('Reset not confirmed','<div class="panel"><h2>Confirmation required</h2><p>No data has been changed.</p></div>',period(pid)),400)
+            try:
+                result=reset_month_delivery_spend_data(pid,f.get('confirm_month'),request_user().get('id'))
+            except (ValueError,RuntimeError,OSError) as e:
+                return self.out(page('Reset cancelled',f'<div class="panel"><h2>No data was deleted</h2><p>{esc(e)}</p><a class="btn secondary" href="/imports/{pid}">Back to Import Center</a></div>',period(pid)),400)
+            body=f"""<section class="hero"><div><span class="eyebrow">Month maintenance</span><h1>Month {esc(result['month'])} reset</h1><p>A database backup was created successfully before deleting this month\'s delivery and spend data.</p></div></section>
+                <div class="panel"><h2>Ready for fresh imports</h2>
+                <p>Removed: <strong>{result['deliveries']:,}</strong> deliveries, <strong>{result['spend']:,}</strong> spend rows, <strong>{result['remises']:,}</strong> remise reviews and <strong>{result['overrides']:,}</strong> Expedition overrides.</p>
+                <p>Product prices, commissions, offers, buyer mappings, currency rates and all other months were preserved. This month\'s dashboards will recalculate when you import new files.</p>
+                <a class="btn" href="/imports/{pid}">Upload corrected files</a></div>"""
+            return self.out(page('Month Reset Complete',body,period(pid)))
         if path.startswith('/imports/'):
             pid=int(path.split('/')[-1]);n=int(self.headers.get('Content-Length','0'));raw=self.rfile.read(n);ctype=self.headers.get('Content-Type','');msg=BytesParser(policy=default).parsebytes((f'Content-Type: {ctype}\r\nMIME-Version: 1.0\r\n\r\n').encode()+raw);fields={};file_name=None;file_bytes=None
             for part in msg.iter_parts():
