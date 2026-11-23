@@ -927,8 +927,9 @@ def expedition_review_rows(period_id):
     rows=c.execute("""select d.id,d.source,d.source_row,d.tracking_number,d.order_id,d.buyer_raw,
         d.city,d.product_raw,d.price,d.delivery_date,d.market_id,m.name market_name
         from deliveries d left join markets m on m.id=d.market_id
-        where d.period_id=? and d.source='GLOBAL' and lower(d.city) like '%exp%dition%'
-        order by (d.market_id is null) desc,d.id""",(period_id,)).fetchall()
+        where d.period_id=? and d.source='GLOBAL' and d.market_id is null
+          and lower(d.city) like '%exp%dition%'
+        order by d.id""",(period_id,)).fetchall()
     c.close();return [dict(r) for r in rows]
 
 
