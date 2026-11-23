@@ -198,6 +198,92 @@ def ensure_period(year,month):
     c.commit();c.close();return pid
 
 
+
+def month_reset_counts(period_id):
+    """Preview scope of a month-only deliveries/spend reset."""
+    c=db()
+    try:
+        if not c.execute('select 1 from periods where id=?',(period_id,)).fetchone():
+            raise ValueError('Month not found')
+        return {
+            'deliveries':c.execute('select count(*) n from deliveries where period_id=?',(period_id,)).fetchone()['n'],
+            'spend':c.execute('select count(*) n from spend where period_id=?',(period_id,)).fetchone()['n'],
+            'remises':c.execute('select count(*) n from remise_reviews where period_id=?',(period_id,)).fetchone()['n'],
+            'overrides':c.execute('select count(*) n from delivery_market_overrides where period_id=?',(period_id,)).fetchone()['n'],
+            'imports':c.execute("""select count(*) n from imports where period_id=? and
+                (kind like 'DELIVERIES%' or kind='SPEND')""",(period_id,)).fetchone()['n'],
+        }
+    finally:
+        c.close()
+
+
+def reset_month_delivery_spend_data(period_id,confirm_label,actor_id=None):
+    """Back up SQLite and atomically clear only one month's import-derived records.
+
+    Products, price offers, commission rules, currencies, buyer mappings,
+    financial adjustments, rules, other periods and uploaded files are preserved.
+    """
+    import sqlite3
+    p=Path(DB)
+    c=db()
+    backup=None
+    try:
+        row=c.execute('select label from periods where id=?',(period_id,)).fetchone()
+        if not row:
+            raise ValueError('Month not found')
+        label=row['label']
+        if str(confirm_label or '').strip()!=label:
+            raise ValueError('Type the selected month exactly to confirm: '+label)
+        counts=month_reset_counts(period_id)
+        root=p.parent/'month_reset_backups'
+        root.mkdir(parents=True,exist_ok=True)
+        backup=root/('before_reset_'+label.replace('-','_')+'_'+
+                     datetime.now().strftime('%Y%m%d_%H%M%S')+'_'+secrets.token_hex(4)+'.sqlite3')
+        temporary=backup.with_suffix('.sqlite3.tmp')
+        try:
+            with sqlite3.connect(str(temporary)) as destination:
+                c.backup(destination)
+                check=destination.execute('pragma integrity_check').fetchone()[0]
+                if check!='ok':
+                    raise RuntimeError('Database backup integrity check failed: '+str(check))
+            if not temporary.exists() or temporary.stat().st_size==0:
+                raise RuntimeError('Database backup is empty')
+            temporary.replace(backup)
+        except Exception:
+            temporary.unlink(missing_ok=True)
+            raise
+        c.execute('begin immediate')
+        try:
+            c.execute("""create table if not exists month_reset_audit(
+                id integer primary key,period_id integer not null,period_label text not null,
+                actor_id integer,backup_path text not null,deliveries_deleted integer,
+                spend_deleted integer,remise_reviews_deleted integer,overrides_deleted integer,
+                import_records_deleted integer,created_at text not null)""")
+            # Delete children first; all changes roll back on any failure.
+            c.execute('delete from remise_reviews where period_id=?',(period_id,))
+            c.execute("""delete from offer_recalc_audit where period_id=?""",(period_id,)) if c.execute(
+                "select 1 from sqlite_master where type='table' and name='offer_recalc_audit'").fetchone() else None
+            c.execute('delete from delivery_market_overrides where period_id=?',(period_id,))
+            c.execute('delete from deliveries where period_id=?',(period_id,))
+            c.execute('delete from spend where period_id=?',(period_id,))
+            c.execute("""delete from imports where period_id=? and
+                       (kind like 'DELIVERIES%' or kind='SPEND')""",(period_id,))
+            c.execute("""insert into month_reset_audit(
+                period_id,period_label,actor_id,backup_path,deliveries_deleted,
+                spend_deleted,remise_reviews_deleted,overrides_deleted,
+                import_records_deleted,created_at) values(?,?,?,?,?,?,?,?,?,?)""",
+                (period_id,label,actor_id,str(backup),counts['deliveries'],
+                 counts['spend'],counts['remises'],counts['overrides'],counts['imports'],
+                 datetime.now().isoformat(timespec='seconds')))
+            c.commit()
+        except Exception:
+            c.rollback()
+            raise
+        return {'month':label,'backup_created':True,**counts}
+    finally:
+        c.close()
+
+
 def previous_period_id(period_id):
     c=db();p=c.execute('select year,month from periods where id=?',(period_id,)).fetchone()
     if not p:c.close();return None
